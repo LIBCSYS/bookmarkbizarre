@@ -54,13 +54,13 @@ struct BookmarkRow: Identifiable, Hashable {
     var requiresVPN: Bool
 }
 
-/// Which slice of the file a bookmark query covers. Three-way on purpose:
-/// nil-folderID couldn't distinguish "everything" from "the document root",
-/// and the drill-down UI needs both.
+/// Which slice of the file a bookmark query covers. Explorer semantics per
+/// J: selecting a folder means its whole subtree, and the tree root means
+/// the whole file.
 enum FolderScope: Hashable {
-    case all            // whole file — search results cut across sections
-    case top            // bookmarks sitting at the document root, outside any folder
-    case folder(Int)    // direct children of one folder
+    case all            // whole file — the tree root, and search results
+    case top            // document-root strays only (no UI uses this today)
+    case folder(Int)    // one folder AND everything beneath it, recursively
 }
 
 // MARK: - Inventory

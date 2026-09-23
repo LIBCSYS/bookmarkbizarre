@@ -325,7 +325,16 @@ final class LibraryDB: LibraryStore {
         case .top:
             conds.append("folder_id IS NULL")
         case .folder(let id):
-            conds.append("folder_id = ?")
+            // Explorer semantics: a folder means everything beneath it, not
+            // just its direct children. Recursive CTE walks the subtree in
+            // SQL — cheaper and simpler than materializing descendant id
+            // lists in Swift and shipping them back as a giant IN (...).
+            conds.append("""
+                folder_id IN (WITH RECURSIVE sub(id) AS (
+                    SELECT ? UNION ALL
+                    SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id
+                ) SELECT id FROM sub)
+                """)
             binds.append(.int(id))
         }
         return (conds.isEmpty ? "" : " WHERE " + conds.joined(separator: " AND "), binds)

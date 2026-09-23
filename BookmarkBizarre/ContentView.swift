@@ -17,15 +17,22 @@ struct ContentView: View {
     @State private var mode: DetailMode = .grid
     @State private var search = ""
     @State private var showImporter = false
+    // Explorer state: the folder cascade lives in the SIDEBAR (J: "have the
+    // folders expand on the left side... Bookmarks Bar first"), so its state
+    // lives here at window level, not inside the detail pane.
+    @State private var folderID: Int?
+    @State private var folderRows: [FolderRow] = []
+    @State private var folderTree: [FolderNode] = []
 
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 220, ideal: 250)
+                .navigationSplitViewColumnWidth(min: 230, ideal: 270)
         } detail: {
             detail
         }
         .overlay(alignment: .top) { bannerLane }
+        .task(id: manager.selectedID) { loadFolders() }
         .fileImporter(
             isPresented: $showImporter,
             // Exports are .html, but Firefox occasionally hands out .txt —
@@ -37,6 +44,22 @@ struct ContentView: View {
     }
 
     // MARK: - Sidebar
+
+    /// Fresh cascade whenever the selected library changes. Read through a
+    /// short-lived store handle — the detail pane owns its own.
+    private func loadFolders() {
+        folderID = nil
+        folderRows = []
+        folderTree = []
+        guard let lib = manager.selected else { return }
+        do {
+            let db = try openLibrary(at: lib.fileURL)
+            folderRows = try db.folders()
+            folderTree = FolderNode.build(from: folderRows)
+        } catch {
+            manager.fail("Could not read folders: \(error.localizedDescription)")
+        }
+    }
 
     private var sidebar: some View {
         List(selection: $manager.selectedID) {
@@ -59,6 +82,22 @@ struct ContentView: View {
                     .tag(lib.id)
                 }
             }
+
+            // The explorer cascade: Bookmarks Bar first (file order), each
+            // folder expanding in place. Selecting one shows its whole
+            // subtree's pages in the portal; the root row shows everything.
+            if !folderTree.isEmpty {
+                Section("Folders") {
+                    sideFolderRow(id: nil, name: "All Bookmarks",
+                                  symbol: "house", count: nil)
+                    OutlineGroup(folderTree, children: \.children) { node in
+                        sideFolderRow(id: node.row.id,
+                                      name: node.row.name.isEmpty ? "(untitled)" : node.row.name,
+                                      symbol: node.row.isToolbar ? "menubar.rectangle" : "folder",
+                                      count: node.row.directCount)
+                    }
+                }
+            }
         }
         .safeAreaInset(edge: .bottom) {
             HStack {
@@ -71,6 +110,32 @@ struct ContentView: View {
         }
     }
 
+    /// One row of the cascade. Plain buttons, not List selection — the List's
+    /// selection already belongs to the library rows, and mixing two selection
+    /// types in one List is how sidebars start fighting themselves.
+    private func sideFolderRow(id: Int?, name: String, symbol: String, count: Int?) -> some View {
+        Button {
+            folderID = id
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11))
+                    .foregroundStyle(folderID == id ? Color.accentColor : Color.secondary)
+                Text(name)
+                    .lineLimit(1)
+                Spacer()
+                if let count, count > 0 {
+                    Text("\(count)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fontWeight(folderID == id ? .semibold : .regular)
+    }
+
     // MARK: - Detail
 
     @ViewBuilder
@@ -78,7 +143,8 @@ struct ContentView: View {
         if manager.libraries.isEmpty {
             blankSlate
         } else if let lib = manager.selected {
-            LibraryDetailView(library: lib, mode: $mode, search: $search)
+            LibraryDetailView(library: lib, mode: $mode, search: $search,
+                              folderID: $folderID, folderRows: folderRows)
                 // Fresh state (store, pages, scroll) per library — .id() is
                 // what prevents library A's grid bleeding into library B.
                 .id(lib.id)
@@ -156,16 +222,12 @@ struct LibraryDetailView: View {
     let library: LibraryInfo
     @Binding var mode: DetailMode
     @Binding var search: String
+    // Navigation belongs to the sidebar cascade now; the detail pane just
+    // renders whatever slice it names.
+    @Binding var folderID: Int?
+    let folderRows: [FolderRow]
     @EnvironmentObject private var manager: LibraryManager
     @State private var store: (any LibraryStore)?
-    // Where the grid is standing in the folder tree. nil = top level — the
-    // drill-down entry point, NOT "everything": the grid never loads the
-    // whole file at once. The tree is loaded once per library alongside the
-    // store — 407 rows, not worth lazy-loading.
-    @State private var folderID: Int?
-    @State private var folderRows: [FolderRow] = []
-    @State private var folderTree: [FolderNode] = []
-    @State private var folderNames: [Int: String] = [:]
 
     var body: some View {
         Group {
@@ -182,15 +244,8 @@ struct LibraryDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .searchable(text: $search, placement: .toolbar, prompt: "Filter title, URL, host")
+        .searchable(text: $search, placement: .toolbar, prompt: "Search whole file")
         .toolbar {
-            // Folder scope only means anything in the grid; hiding it in
-            // inventory keeps the toolbar honest about what it affects.
-            if mode == .grid {
-                ToolbarItem(placement: .navigation) {
-                    FolderPicker(tree: folderTree, names: folderNames, selection: $folderID)
-                }
-            }
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $mode) {
                     ForEach(DetailMode.allCases) { m in
@@ -204,83 +259,10 @@ struct LibraryDetailView: View {
         .task(id: library.id) {
             do {
                 store = try openLibrary(at: library.fileURL)
-                folderRows = try store?.folders() ?? []
-                folderTree = FolderNode.build(from: folderRows)
-                folderNames = Dictionary(uniqueKeysWithValues: folderRows.map { ($0.id, $0.name) })
             } catch {
                 manager.fail("Could not open \(library.name): \(error.localizedDescription)")
             }
         }
-    }
-}
-
-// MARK: - Folder picker
-
-/// Toolbar entry point for walking the folder tree: a button naming the
-/// current scope, a popover with the full outline. A Menu would work too,
-/// but 407 folders as nested submenus is a hedge maze — a scrollable tree
-/// with disclosure triangles matches how J already navigates them in the
-/// browser's own manager.
-struct FolderPicker: View {
-    let tree: [FolderNode]
-    let names: [Int: String]
-    @Binding var selection: Int?
-    @State private var showPopover = false
-
-    var body: some View {
-        Button {
-            showPopover = true
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: selection == nil ? "house" : "folder.fill")
-                Text(selection.flatMap { names[$0] } ?? "Top Level")
-                    .lineLimit(1)
-                    .frame(maxWidth: 160)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .help("Show one folder's bookmarks")
-        .popover(isPresented: $showPopover, arrowEdge: .bottom) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    row(id: nil, name: "Top Level", count: nil, depth: 0)
-                    Divider()
-                        .padding(.vertical, 4)
-                    OutlineGroup(tree, children: \.children) { node in
-                        row(id: node.row.id, name: node.row.name,
-                            count: node.row.directCount, depth: 0)
-                    }
-                }
-                .padding(10)
-            }
-            .frame(width: 320, height: 420)
-        }
-    }
-
-    private func row(id: Int?, name: String, count: Int?, depth: Int) -> some View {
-        Button {
-            selection = id
-            showPopover = false
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: selection == id ? "checkmark.circle.fill" : "folder")
-                    .foregroundStyle(selection == id ? Color.accentColor : Color.secondary)
-                    .font(.system(size: 11))
-                Text(name.isEmpty ? "(untitled)" : name)
-                    .lineLimit(1)
-                Spacer()
-                if let count, count > 0 {
-                    Text("\(count)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.vertical, 2)
     }
 }
 
