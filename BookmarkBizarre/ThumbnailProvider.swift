@@ -73,6 +73,27 @@ final class ThumbnailProvider {
 
     // MARK: - Scheduling
 
+    /// Folder lost focus: stop rendering it (J's ask, verbatim). Drops the
+    /// whole waiting queue and aborts the in-flight webviews so the next
+    /// folder starts with all three capture slots free. Cancelled keys are
+    /// NOT marked failed — scroll back into that folder and they retry.
+    func flushPending() {
+        for item in queue {
+            for cont in waiters.removeValue(forKey: item.key) ?? [] {
+                cont.resume(returning: nil)
+            }
+        }
+        queue.removeAll()
+
+        for (key, job) in active {
+            job.cancel()
+            for cont in waiters.removeValue(forKey: key) ?? [] {
+                cont.resume(returning: nil)
+            }
+        }
+        active.removeAll()
+    }
+
     private func enqueue(key: String, url: URL) {
         // Already capturing or queued: the waiter list handles delivery.
         guard active[key] == nil, !queue.contains(where: { $0.key == key }) else { return }
@@ -229,6 +250,17 @@ private final class CaptureJob: NSObject, WKNavigationDelegate {
         var request = URLRequest(url: url)
         request.timeoutInterval = 12
         webView.load(request)
+    }
+
+    /// Abort without reporting failure. `finished` goes true FIRST so the
+    /// delegate callbacks that stopLoading provokes (and the timeout) all
+    /// no-op — the completion is never called for a cancelled job, because
+    /// "J moved to another folder" must not brand the URL as dead.
+    func cancel() {
+        finished = true
+        timeoutWork?.cancel()
+        webView.stopLoading()
+        webView.navigationDelegate = nil
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

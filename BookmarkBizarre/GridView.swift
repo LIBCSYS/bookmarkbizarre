@@ -200,6 +200,10 @@ struct GridView: View {
     // MARK: - Data
 
     private func reload() {
+        // The folder that just lost focus stops rendering NOW — otherwise its
+        // leftover captures hold the three slots and the new folder's tiles
+        // queue behind ghosts.
+        ThumbnailProvider.shared.flushPending()
         do {
             total = try store.bookmarkTotal(search: search, scope: scope)
             rows = try store.bookmarks(search: search, scope: scope, limit: pageSize, offset: 0)
