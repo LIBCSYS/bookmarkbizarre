@@ -37,6 +37,14 @@ struct GridView: View {
         min(1.6, max(1.2, 340 / tileSize))
     }
 
+    /// Dwell target: keep hovering and the tile keeps growing to reading
+    /// size (J: "the longer we hover, the bigger it gets"). Aims for ~680pt
+    /// of on-screen width whatever the slider says, capped so a tiny-tile
+    /// sheet doesn't quadruple into absurdity.
+    private var dwellScale: CGFloat {
+        min(4.0, max(hoverScale + 0.4, 680 / tileSize))
+    }
+
     // Explorer semantics: the tree on the left navigates, the portal only
     // ever shows pages. A folder selection covers its whole subtree; the
     // root covers the whole file — lazily paged, so "all the thumbnails"
@@ -77,6 +85,7 @@ struct GridView: View {
                             row: row,
                             store: store,
                             hoverScale: hoverScale,
+                            dwellScale: dwellScale,
                             isHovered: hoveredID == row.id,
                             onHover: { inside in
                                 if inside {
@@ -226,6 +235,7 @@ struct BookmarkTile: View {
     let row: BookmarkRow
     let store: any LibraryStore
     let hoverScale: CGFloat
+    let dwellScale: CGFloat
     let isHovered: Bool
     let onHover: (Bool) -> Void
     let onChanged: (BookmarkRow) -> Void
@@ -236,6 +246,10 @@ struct BookmarkTile: View {
     @State private var showRename = false
     @State private var renameText = ""
     @State private var showCollect = false
+    /// Current scale, animated in two stages: a quick pop to hoverScale, then
+    /// a slow easeInOut crawl to dwellScale while the pointer stays put.
+    @State private var zoom: CGFloat = 1
+    @State private var dwellTask: Task<Void, Never>?
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -251,9 +265,24 @@ struct BookmarkTile: View {
         // Marked-for-removal reads as "going away" without hiding it — J
         // still needs to see it to change his mind.
         .opacity(row.markedForRemoval ? 0.35 : 1)
-        .scaleEffect(isHovered ? hoverScale : 1)
-        .shadow(color: .black.opacity(isHovered ? 0.35 : 0), radius: isHovered ? 18 : 0, y: 4)
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isHovered)
+        .scaleEffect(zoom)
+        .shadow(color: .black.opacity(zoom > 1 ? 0.35 : 0), radius: zoom > 1 ? 18 : 0, y: 4)
+        .onChange(of: isHovered) { _, inside in
+            dwellTask?.cancel()
+            if inside {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) { zoom = hoverScale }
+                dwellTask = Task {
+                    // Beat of stillness before the crawl starts, so sweeping
+                    // the pointer across the sheet doesn't balloon every tile
+                    // it crosses.
+                    try? await Task.sleep(for: .milliseconds(600))
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.easeInOut(duration: 1.8)) { zoom = dwellScale }
+                }
+            } else {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) { zoom = 1 }
+            }
+        }
         .onHover(perform: onHover)
         .onTapGesture(perform: open)
         .help(row.url)

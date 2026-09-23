@@ -121,7 +121,10 @@ final class ThumbnailProvider {
     // MARK: - Disk cache
 
     static func cacheKey(_ url: String) -> String {
-        SHA256.hash(data: Data(url.utf8)).map { String(format: "%02x", $0) }.joined()
+        // "@800" is a cache generation stamp: dwell-zoom made 400px captures
+        // readably blurry, so the resolution doubled — suffixing the key
+        // orphans the old files (harmless) instead of serving them soft.
+        SHA256.hash(data: Data(url.utf8)).map { String(format: "%02x", $0) }.joined() + "@800"
     }
 
     private func loadDisk(_ key: String) -> NSImage? {
@@ -248,8 +251,9 @@ private final class CaptureJob: NSObject, WKNavigationDelegate {
         guard !finished else { return }
         let config = WKSnapshotConfiguration()
         // WebKit does the downscale for us — full 1024pt render delivered
-        // at 400pt, no NSImage resize pass needed.
-        config.snapshotWidth = NSNumber(value: 400)
+        // at 800pt, no NSImage resize pass needed. 800 not 400 because the
+        // dwell zoom blows tiles up ~3x and J reads them, not squints.
+        config.snapshotWidth = NSNumber(value: 800)
         webView.takeSnapshot(with: config) { [weak self] image, _ in
             self?.finish(image)
         }
