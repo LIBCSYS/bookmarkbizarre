@@ -54,6 +54,15 @@ struct BookmarkRow: Identifiable, Hashable {
     var requiresVPN: Bool
 }
 
+/// Which slice of the file a bookmark query covers. Three-way on purpose:
+/// nil-folderID couldn't distinguish "everything" from "the document root",
+/// and the drill-down UI needs both.
+enum FolderScope: Hashable {
+    case all            // whole file — search results cut across sections
+    case top            // bookmarks sitting at the document root, outside any folder
+    case folder(Int)    // direct children of one folder
+}
+
 // MARK: - Inventory
 
 /// The evaluation pass over one library — computed live from SQL, never
@@ -88,10 +97,12 @@ protocol LibraryStore: AnyObject {
     func folders() throws -> [FolderRow]
 
     /// Filtered page of bookmarks. `search` matches title OR url OR host
-    /// (LIKE, case-insensitive); empty string = no filter. `folderID` nil =
-    /// whole file. Ordered by original file position.
-    func bookmarks(search: String, folderID: Int?, limit: Int, offset: Int) throws -> [BookmarkRow]
-    func bookmarkTotal(search: String, folderID: Int?) throws -> Int
+    /// (LIKE, case-insensitive); empty string = no filter. `scope` picks the
+    /// folder slice — the UI browses section-by-section (J: never load all
+    /// 6,000 at once), so `.all` exists for search, not for browsing.
+    /// Ordered by original file position.
+    func bookmarks(search: String, scope: FolderScope, limit: Int, offset: Int) throws -> [BookmarkRow]
+    func bookmarkTotal(search: String, scope: FolderScope) throws -> Int
 
     // Tile-menu edits — each is one UPDATE, no batching needed at this scale.
     func rename(bookmarkID: Int, to title: String) throws

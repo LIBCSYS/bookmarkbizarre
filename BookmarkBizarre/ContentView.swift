@@ -158,9 +158,12 @@ struct LibraryDetailView: View {
     @Binding var search: String
     @EnvironmentObject private var manager: LibraryManager
     @State private var store: (any LibraryStore)?
-    // Folder scope for the grid. nil = whole file. The tree is loaded once
-    // per library alongside the store — 407 rows, not worth lazy-loading.
+    // Where the grid is standing in the folder tree. nil = top level — the
+    // drill-down entry point, NOT "everything": the grid never loads the
+    // whole file at once. The tree is loaded once per library alongside the
+    // store — 407 rows, not worth lazy-loading.
     @State private var folderID: Int?
+    @State private var folderRows: [FolderRow] = []
     @State private var folderTree: [FolderNode] = []
     @State private var folderNames: [Int: String] = [:]
 
@@ -169,7 +172,8 @@ struct LibraryDetailView: View {
             if let store {
                 switch mode {
                 case .grid:
-                    GridView(store: store, search: search, folderID: folderID)
+                    GridView(store: store, search: search,
+                             folderID: $folderID, folderRows: folderRows)
                 case .inventory:
                     InventoryView(store: store)
                 }
@@ -200,9 +204,9 @@ struct LibraryDetailView: View {
         .task(id: library.id) {
             do {
                 store = try openLibrary(at: library.fileURL)
-                let rows = try store?.folders() ?? []
-                folderTree = FolderNode.build(from: rows)
-                folderNames = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.name) })
+                folderRows = try store?.folders() ?? []
+                folderTree = FolderNode.build(from: folderRows)
+                folderNames = Dictionary(uniqueKeysWithValues: folderRows.map { ($0.id, $0.name) })
             } catch {
                 manager.fail("Could not open \(library.name): \(error.localizedDescription)")
             }
@@ -228,8 +232,8 @@ struct FolderPicker: View {
             showPopover = true
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: selection == nil ? "folder" : "folder.fill")
-                Text(selection.flatMap { names[$0] } ?? "All Folders")
+                Image(systemName: selection == nil ? "house" : "folder.fill")
+                Text(selection.flatMap { names[$0] } ?? "Top Level")
                     .lineLimit(1)
                     .frame(maxWidth: 160)
                 Image(systemName: "chevron.down")
@@ -241,7 +245,7 @@ struct FolderPicker: View {
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    row(id: nil, name: "All Folders", count: nil, depth: 0)
+                    row(id: nil, name: "Top Level", count: nil, depth: 0)
                     Divider()
                         .padding(.vertical, 4)
                     OutlineGroup(tree, children: \.children) { node in

@@ -311,7 +311,7 @@ final class LibraryDB: LibraryStore {
 
     /// WHERE assembled once, shared with bookmarkTotal, so the page and its
     /// count can never disagree about what "filtered" means.
-    private func filterClause(search: String, folderID: Int?) -> (sql: String, binds: [SQLValue]) {
+    private func filterClause(search: String, scope: FolderScope) -> (sql: String, binds: [SQLValue]) {
         var conds: [String] = []
         var binds: [SQLValue] = []
         if !search.isEmpty {
@@ -319,15 +319,20 @@ final class LibraryDB: LibraryStore {
             let pattern = "%\(search)%"
             binds += [.text(pattern), .text(pattern), .text(pattern)]
         }
-        if let folderID {
+        switch scope {
+        case .all:
+            break
+        case .top:
+            conds.append("folder_id IS NULL")
+        case .folder(let id):
             conds.append("folder_id = ?")
-            binds.append(.int(folderID))
+            binds.append(.int(id))
         }
         return (conds.isEmpty ? "" : " WHERE " + conds.joined(separator: " AND "), binds)
     }
 
-    func bookmarks(search: String, folderID: Int?, limit: Int, offset: Int) throws -> [BookmarkRow] {
-        let f = filterClause(search: search, folderID: folderID)
+    func bookmarks(search: String, scope: FolderScope, limit: Int, offset: Int) throws -> [BookmarkRow] {
+        let f = filterClause(search: search, scope: scope)
         let s = try Stmt(db!, """
             SELECT id, title, url, scheme, host, folder_id, position, add_date,
                    dup_group, icon_uri, marked_for_removal, requires_vpn
@@ -353,8 +358,8 @@ final class LibraryDB: LibraryStore {
         return out
     }
 
-    func bookmarkTotal(search: String, folderID: Int?) throws -> Int {
-        let f = filterClause(search: search, folderID: folderID)
+    func bookmarkTotal(search: String, scope: FolderScope) throws -> Int {
+        let f = filterClause(search: search, scope: scope)
         return try scalarInt("SELECT COUNT(*) FROM bookmarks\(f.sql)", f.binds)
     }
 
@@ -533,7 +538,7 @@ enum Importer {
     /// LibraryInfo straight off an existing DB — what the sidebar rescan uses.
     static func info(for dbURL: URL) throws -> LibraryInfo {
         let db = try LibraryDB(at: dbURL, create: false)
-        let count = try db.bookmarkTotal(search: "", folderID: nil)
+        let count = try db.bookmarkTotal(search: "", scope: .all)
         let sourceName = try db.meta("source_name") ?? dbURL.lastPathComponent
         let sourcePath = try db.meta("source_path") ?? ""
         let importedAt = try db.meta("imported_at").flatMap { ISO8601DateFormatter().date(from: $0) }

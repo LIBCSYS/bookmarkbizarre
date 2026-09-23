@@ -10,7 +10,11 @@ import AppKit
 struct GridView: View {
     let store: any LibraryStore
     let search: String
-    let folderID: Int?
+    /// Where J is standing in the folder tree. nil = the file's top level.
+    /// A Binding so the toolbar picker and the in-grid drill-down move the
+    /// same needle.
+    @Binding var folderID: Int?
+    let folderRows: [FolderRow]
     @EnvironmentObject private var manager: LibraryManager
 
     @State private var rows: [BookmarkRow] = []
@@ -19,7 +23,7 @@ struct GridView: View {
     /// Only one tile may be enlarged; tracking the id here (not per-tile)
     /// lets the grid raise that tile's zIndex so it draws over its neighbors.
     @State private var hoveredID: Int?
-    /// J's zoom dial: small = the whole file on one sheet, large = 3-5
+    /// J's zoom dial: small = the whole section on one sheet, large = 3-5
     /// across. Persisted — the size he settles on is a preference, not
     /// per-session mood.
     @AppStorage("gridTileSize") private var tileSize = 200.0
@@ -33,43 +37,92 @@ struct GridView: View {
         min(1.6, max(1.2, 340 / tileSize))
     }
 
+    // Browsing is section-by-section (J: "when I click on a section, it only
+    // loads that section" — never the whole file). Search is the deliberate
+    // exception: it cuts across the file, and shows flat results.
+    private var searching: Bool { !search.isEmpty }
+    private var scope: FolderScope {
+        if searching { return .all }
+        if let folderID { return .folder(folderID) }
+        return .top
+    }
+
+    private var folderByID: [Int: FolderRow] {
+        Dictionary(uniqueKeysWithValues: folderRows.map { ($0.id, $0) })
+    }
+    private var childFolders: [FolderRow] {
+        searching ? [] : folderRows.filter { $0.parentID == folderID }
+    }
+    private func subfolderCount(of id: Int) -> Int {
+        folderRows.reduce(0) { $1.parentID == id ? $0 + 1 : $0 }
+    }
+    /// Root → current chain for the breadcrumb, walked via parentID.
+    private var breadcrumb: [FolderRow] {
+        var chain: [FolderRow] = []
+        var cursor = folderID
+        while let id = cursor, let row = folderByID[id] {
+            chain.append(row)
+            cursor = row.parentID
+        }
+        return chain.reversed()
+    }
+
     var body: some View {
         ScrollView {
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: tileSize, maximum: tileSize * 1.3),
-                                   spacing: 6)],
-                spacing: 6
-            ) {
-                ForEach(rows) { row in
-                    BookmarkTile(
-                        row: row,
-                        store: store,
-                        hoverScale: hoverScale,
-                        isHovered: hoveredID == row.id,
-                        onHover: { inside in
-                            if inside {
-                                hoveredID = row.id
-                            } else if hoveredID == row.id {
-                                hoveredID = nil
-                            }
-                        },
-                        onChanged: { apply($0) },
-                        onNotice: { manager.notice($0) },
-                        onError: { manager.fail($0) }
-                    )
-                    .zIndex(hoveredID == row.id ? 10 : 0)
-                    .onAppear {
-                        // Infinite scroll: the last materialized tile asks for
-                        // the next page. LazyVGrid only builds visible cells,
-                        // so this fires exactly at the frontier.
-                        if row.id == rows.last?.id { loadMore() }
+            VStack(alignment: .leading, spacing: 10) {
+                header
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: tileSize, maximum: tileSize * 1.3),
+                                       spacing: 6)],
+                    spacing: 6
+                ) {
+                    // Sections first, pages after — the shape of the shelf
+                    // before the books on it.
+                    ForEach(childFolders) { f in
+                        FolderTile(row: f, subfolders: subfolderCount(of: f.id)) {
+                            folderID = f.id
+                        }
                     }
+
+                    ForEach(rows) { row in
+                        BookmarkTile(
+                            row: row,
+                            store: store,
+                            hoverScale: hoverScale,
+                            isHovered: hoveredID == row.id,
+                            onHover: { inside in
+                                if inside {
+                                    hoveredID = row.id
+                                } else if hoveredID == row.id {
+                                    hoveredID = nil
+                                }
+                            },
+                            onChanged: { apply($0) },
+                            onNotice: { manager.notice($0) },
+                            onError: { manager.fail($0) }
+                        )
+                        .zIndex(hoveredID == row.id ? 10 : 0)
+                        .onAppear {
+                            // Infinite scroll: the last materialized tile asks for
+                            // the next page. LazyVGrid only builds visible cells,
+                            // so this fires exactly at the frontier.
+                            if row.id == rows.last?.id { loadMore() }
+                        }
+                    }
+                }
+
+                if !searching && childFolders.isEmpty && rows.isEmpty {
+                    Text("Empty folder")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(40)
                 }
             }
             .padding(12)
         }
         .safeAreaInset(edge: .bottom) { bottomBar }
-        .task(id: "\(search)|\(folderID.map(String.init) ?? "all")") {
+        .task(id: "\(search)|\(folderID.map(String.init) ?? "top")") {
             // Debounce: typing "github" is 6 keystrokes, not 6 SQL sweeps.
             // Folder switches ride the same 250ms — imperceptible on a click.
             try? await Task.sleep(for: .milliseconds(250))
@@ -78,11 +131,49 @@ struct GridView: View {
         }
     }
 
+    /// Breadcrumb while browsing; a plain banner while searching, because
+    /// search results come from everywhere and a folder trail would lie.
+    @ViewBuilder
+    private var header: some View {
+        if searching {
+            Label("Search results — whole file", systemImage: "magnifyingglass")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            HStack(spacing: 4) {
+                crumb(name: "Library", symbol: "house.fill") { folderID = nil }
+                ForEach(breadcrumb) { f in
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                    crumb(name: f.name.isEmpty ? "(untitled)" : f.name,
+                          symbol: nil,
+                          isCurrent: f.id == folderID) { folderID = f.id }
+                }
+            }
+            .lineLimit(1)
+        }
+    }
+
+    private func crumb(name: String, symbol: String?, isCurrent: Bool = false,
+                       action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                if let symbol { Image(systemName: symbol).font(.system(size: 10)) }
+                Text(name)
+            }
+            .font(.callout.weight(isCurrent ? .semibold : .regular))
+            .foregroundStyle(isCurrent ? Color.primary : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .disabled(isCurrent)
+    }
+
     /// Count readout + the size dial, one thin bar under the sheet.
     private var bottomBar: some View {
         HStack(spacing: 10) {
             if loading { ProgressView().controlSize(.small) }
-            Text(total == 0 ? "No bookmarks match" : "Showing \(rows.count) of \(total)")
+            Text(countLine)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -102,12 +193,23 @@ struct GridView: View {
         .background(.bar)
     }
 
+    private var countLine: String {
+        if searching {
+            return total == 0 ? "No bookmarks match" : "\(total) matches across the file"
+        }
+        var parts: [String] = []
+        if !childFolders.isEmpty { parts.append("\(childFolders.count) folders") }
+        if total > 0 { parts.append(rows.count < total ? "showing \(rows.count) of \(total) pages"
+                                                       : "\(total) pages") }
+        return parts.isEmpty ? "Empty folder" : parts.joined(separator: " · ")
+    }
+
     // MARK: - Data
 
     private func reload() {
         do {
-            total = try store.bookmarkTotal(search: search, folderID: nil)
-            rows = try store.bookmarks(search: search, folderID: nil, limit: pageSize, offset: 0)
+            total = try store.bookmarkTotal(search: search, scope: scope)
+            rows = try store.bookmarks(search: search, scope: scope, limit: pageSize, offset: 0)
         } catch {
             manager.fail("Load failed: \(error.localizedDescription)")
         }
@@ -118,7 +220,7 @@ struct GridView: View {
         loading = true
         defer { loading = false }
         do {
-            let next = try store.bookmarks(search: search, folderID: nil, limit: pageSize, offset: rows.count)
+            let next = try store.bookmarks(search: search, scope: scope, limit: pageSize, offset: rows.count)
             rows.append(contentsOf: next)
         } catch {
             manager.fail("Load failed: \(error.localizedDescription)")
@@ -131,6 +233,51 @@ struct GridView: View {
         if let i = rows.firstIndex(where: { $0.id == updated.id }) {
             rows[i] = updated
         }
+    }
+}
+
+// MARK: - Folder tile
+
+/// A section on the shelf. Same footprint as a page tile so the grid keeps
+/// its rhythm, but visually unmistakably a folder — no thumbnail machinery,
+/// nothing loads until it is entered.
+struct FolderTile: View {
+    let row: FolderRow
+    let subfolders: Int
+    let onOpen: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(systemName: row.isToolbar ? "menubar.rectangle" : "folder.fill")
+                .font(.system(size: 34))
+                .foregroundStyle(Color.accentColor.opacity(0.8))
+            Text(row.name.isEmpty ? "(untitled)" : row.name)
+                .font(.callout.weight(.medium))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+            Text(detailLine)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .aspectRatio(4.0 / 3.0, contentMode: .fit)
+        .background(.quaternary.opacity(hovering ? 0.9 : 0.55),
+                    in: RoundedRectangle(cornerRadius: 6))
+        .contentShape(RoundedRectangle(cornerRadius: 6))
+        .scaleEffect(hovering ? 1.04 : 1)
+        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: hovering)
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: onOpen)
+        .help("Open \(row.name)")
+    }
+
+    private var detailLine: String {
+        var parts: [String] = []
+        if row.directCount > 0 { parts.append("\(row.directCount) pages") }
+        if subfolders > 0 { parts.append("\(subfolders) folders") }
+        return parts.isEmpty ? "empty" : parts.joined(separator: " · ")
     }
 }
 
