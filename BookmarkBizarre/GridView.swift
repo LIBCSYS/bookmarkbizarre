@@ -20,9 +20,12 @@ struct GridView: View {
     @State private var rows: [BookmarkRow] = []
     @State private var total = 0
     @State private var loading = false
-    /// Only one tile may be enlarged; tracking the id here (not per-tile)
-    /// lets the grid raise that tile's zIndex so it draws over its neighbors.
-    @State private var hoveredID: Int?
+    /// The tile being enlarged, plus where its cell sits in the viewport.
+    /// The zoom renders in an OVERLAY above the whole grid — zIndex between
+    /// LazyVGrid cells is decorative at best, and neighbors kept drawing on
+    /// top of the in-cell scale (J saw exactly that).
+    @State private var hoveredRow: BookmarkRow?
+    @State private var hoveredFrame: CGRect = .zero
     /// J's zoom dial: small = the whole section on one sheet, large = 3-5
     /// across. Persisted — the size he settles on is a preference, not
     /// per-session mood.
@@ -88,22 +91,23 @@ struct GridView: View {
                         BookmarkTile(
                             row: row,
                             store: store,
-                            hoverScale: hoverScale,
-                            dwellScale: dwellScale,
-                            viewport: vp.size,
-                            isHovered: hoveredID == row.id,
-                            onHover: { inside in
+                            showStrip: false,
+                            onHover: { inside, frame in
+                                // Enter arms the overlay. Exit is deliberately
+                                // ignored here: the overlay covers this cell,
+                                // steals the pointer, and owns its own dismissal.
                                 if inside {
-                                    hoveredID = row.id
-                                } else if hoveredID == row.id {
-                                    hoveredID = nil
+                                    hoveredRow = row
+                                    hoveredFrame = frame
                                 }
                             },
                             onChanged: { apply($0) },
                             onNotice: { manager.notice($0) },
                             onError: { manager.fail($0) }
                         )
-                        .zIndex(hoveredID == row.id ? 10 : 0)
+                        // The overlay copy is the visible one while hovered —
+                        // hiding the original prevents double-vision under it.
+                        .opacity(hoveredRow?.id == row.id ? 0 : 1)
                         .onAppear {
                             // Infinite scroll: the last materialized tile asks for
                             // the next page. LazyVGrid only builds visible cells,
@@ -123,6 +127,30 @@ struct GridView: View {
             .padding(12)
         }
         .coordinateSpace(name: "bmzViewport")
+        // The zoom layer: drawn after (= above) the entire ScrollView, so no
+        // grid cell can ever stack in front of the enlarged page.
+        .overlay(alignment: .topLeading) {
+            if let hr = hoveredRow {
+                HoverZoom(
+                    row: hr,
+                    store: store,
+                    baseFrame: hoveredFrame,
+                    hoverScale: hoverScale,
+                    dwellScale: dwellScale,
+                    viewport: vp.size,
+                    onChanged: { updated in
+                        apply(updated)
+                        hoveredRow = updated
+                    },
+                    onNotice: { manager.notice($0) },
+                    onError: { manager.fail($0) },
+                    onDismiss: { hoveredRow = nil }
+                )
+                // Fresh instance per tile: zoom state must not carry over
+                // when the pointer slides from one tile to the next.
+                .id(hr.id)
+            }
+        }
         .safeAreaInset(edge: .bottom) { bottomBar }
         .task(id: "\(search)|\(folderID.map(String.init) ?? "top")") {
             // Debounce: typing "github" is 6 keystrokes, not 6 SQL sweeps.
@@ -240,78 +268,67 @@ struct GridView: View {
     }
 }
 
-// MARK: - Tile
+// MARK: - Hover zoom overlay
 
-struct BookmarkTile: View {
+/// The enlarged page. Lives in the grid's overlay layer, positioned over
+/// the hovered cell, and owns the whole zoom lifecycle: pop on appear,
+/// dwell crawl while the pointer stays, shrink-then-remove on exit. It
+/// covers its cell exactly, so the pointer that armed it lands on it and
+/// keeps it alive; its own hover-exit is the single dismissal path.
+struct HoverZoom: View {
     let row: BookmarkRow
     let store: any LibraryStore
+    let baseFrame: CGRect
     let hoverScale: CGFloat
     let dwellScale: CGFloat
     let viewport: CGSize
-    let isHovered: Bool
-    let onHover: (Bool) -> Void
     let onChanged: (BookmarkRow) -> Void
     let onNotice: (String) -> Void
     let onError: (String) -> Void
+    let onDismiss: () -> Void
 
-    @AppStorage(BMZ.vpnClientPathKey) private var vpnClientPath = ""
-    @State private var showRename = false
-    @State private var renameText = ""
-    @State private var showCollect = false
-    /// Current scale, animated in two stages: a quick pop to hoverScale, then
-    /// a slow easeInOut crawl to dwellScale while the pointer stays put.
     @State private var zoom: CGFloat = 1
-    @State private var dwellTask: Task<Void, Never>?
-    /// Where the scale pins the tile. Center for tiles with room; pushed
-    /// toward the tile's outer edge near the borders so growth goes inward
-    /// and the enlarged page stays fully on screen.
     @State private var anchor: UnitPoint = .center
+    @State private var dwellTask: Task<Void, Never>?
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            TileThumbnail(row: row)
-
-            caption
-            badges
-            controlStrip
-        }
-        .aspectRatio(4.0 / 3.0, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .contentShape(RoundedRectangle(cornerRadius: 6))
-        // Marked-for-removal reads as "going away" without hiding it — J
-        // still needs to see it to change his mind.
-        .opacity(row.markedForRemoval ? 0.35 : 1)
+        BookmarkTile(
+            row: row,
+            store: store,
+            showStrip: true,
+            onHover: { inside, _ in if !inside { dismiss() } },
+            onChanged: onChanged,
+            onNotice: onNotice,
+            onError: onError
+        )
+        .frame(width: baseFrame.width, height: baseFrame.height)
         .scaleEffect(zoom, anchor: anchor)
         .shadow(color: .black.opacity(zoom > 1 ? 0.35 : 0), radius: zoom > 1 ? 18 : 0, y: 4)
-        .background(GeometryReader { geo in
-            // The zoom trigger lives inside GeometryReader because the anchor
-            // needs the tile's frame AT HOVER TIME — and it's computed once,
-            // for the final dwell size, so the growth direction never jumps
-            // mid-crawl. The anchor survives the shrink-back on purpose: the
-            // tile returns along the path it grew.
-            Color.clear.onChange(of: isHovered) { _, inside in
-                dwellTask?.cancel()
-                if inside {
-                    anchor = Self.edgeAwareAnchor(
-                        frame: geo.frame(in: .named("bmzViewport")),
-                        viewport: viewport, zoom: dwellScale)
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) { zoom = hoverScale }
-                    dwellTask = Task {
-                        // Beat of stillness before the crawl starts, so sweeping
-                        // the pointer across the sheet doesn't balloon every tile
-                        // it crosses.
-                        try? await Task.sleep(for: .milliseconds(600))
-                        guard !Task.isCancelled else { return }
-                        withAnimation(.easeInOut(duration: 1.8)) { zoom = dwellScale }
-                    }
-                } else {
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) { zoom = 1 }
-                }
+        .position(x: baseFrame.midX, y: baseFrame.midY)
+        .onAppear {
+            // Anchor computed once, for the final dwell size, so the growth
+            // direction never jumps mid-crawl — and edge cells grow inward.
+            anchor = HoverZoom.edgeAwareAnchor(frame: baseFrame, viewport: viewport, zoom: dwellScale)
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) { zoom = hoverScale }
+            dwellTask = Task {
+                // Beat of stillness before the crawl starts, so sweeping the
+                // pointer across the sheet doesn't balloon every tile crossed.
+                try? await Task.sleep(for: .milliseconds(600))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 1.8)) { zoom = dwellScale }
             }
-        })
-        .onHover(perform: onHover)
-        .onTapGesture(perform: open)
-        .help(row.url)
+        }
+    }
+
+    private func dismiss() {
+        dwellTask?.cancel()
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) { zoom = 1 }
+        // Let the shrink play before the overlay leaves the tree — removal
+        // mid-animation reads as a flicker.
+        Task {
+            try? await Task.sleep(for: .milliseconds(260))
+            onDismiss()
+        }
     }
 
     /// Picks the scale anchor that keeps the fully-grown tile inside the
@@ -335,10 +352,60 @@ struct BookmarkTile: View {
             y: axis(lead: frame.minY, trail: viewport.height - frame.maxY,
                     grow: frame.height * (zoom - 1)))
     }
+}
+
+// MARK: - Tile
+
+struct BookmarkTile: View {
+    let row: BookmarkRow
+    let store: any LibraryStore
+    /// Grid cells pass false (the overlay copy carries the controls);
+    /// the overlay passes true.
+    let showStrip: Bool
+    /// Reports enter/exit plus the cell's current viewport frame, so the
+    /// grid can place the zoom overlay exactly over this cell.
+    let onHover: (Bool, CGRect) -> Void
+    let onChanged: (BookmarkRow) -> Void
+    let onNotice: (String) -> Void
+    let onError: (String) -> Void
+
+    @AppStorage(BMZ.vpnClientPathKey) private var vpnClientPath = ""
+    @State private var showRename = false
+    @State private var renameText = ""
+    @State private var showCollect = false
+    @State private var frameInViewport: CGRect = .zero
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            TileThumbnail(row: row)
+
+            caption
+            badges
+            if showStrip { controlStrip }
+        }
+        .aspectRatio(4.0 / 3.0, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contentShape(RoundedRectangle(cornerRadius: 6))
+        // Marked-for-removal reads as "going away" without hiding it — J
+        // still needs to see it to change his mind.
+        .opacity(row.markedForRemoval ? 0.35 : 1)
+        .background(GeometryReader { geo in
+            // Frame reporter: kept current across layout AND scroll so the
+            // overlay lands exactly where the cell is, not where it was.
+            Color.clear
+                .onAppear { frameInViewport = geo.frame(in: .named("bmzViewport")) }
+                .onChange(of: geo.frame(in: .named("bmzViewport"))) { _, f in
+                    frameInViewport = f
+                }
+        })
+        .onHover { inside in onHover(inside, frameInViewport) }
+        .onTapGesture(perform: open)
+        .help(row.url)
+    }
 
     // MARK: Pieces
 
-    private var caption: some View {
+    fileprivate var caption: some View {
         // Bottom gradient keeps white page snapshots from swallowing the title.
         VStack(alignment: .leading, spacing: 1) {
             Text(row.title.isEmpty ? (row.host ?? row.url) : row.title)
@@ -417,7 +484,8 @@ struct BookmarkTile: View {
         .padding(.vertical, 8)
         .padding(.horizontal, 3)
         .background(.ultraThinMaterial, in: Capsule())
-        .opacity(isHovered ? 1 : 0)
+        // No hover gate: the strip only renders on the overlay copy, which
+        // exists exactly while the tile is hovered.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         .padding(.trailing, 4)
     }
