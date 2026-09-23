@@ -71,6 +71,10 @@ struct GridView: View {
     }
 
     var body: some View {
+        // The viewport wrapper feeds every tile its own position-vs-edges
+        // math: a zooming tile must grow INWARD at the borders or it slides
+        // under the edge and gets clipped (J hit exactly that).
+        GeometryReader { vp in
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 header
@@ -86,6 +90,7 @@ struct GridView: View {
                             store: store,
                             hoverScale: hoverScale,
                             dwellScale: dwellScale,
+                            viewport: vp.size,
                             isHovered: hoveredID == row.id,
                             onHover: { inside in
                                 if inside {
@@ -117,6 +122,7 @@ struct GridView: View {
             }
             .padding(12)
         }
+        .coordinateSpace(name: "bmzViewport")
         .safeAreaInset(edge: .bottom) { bottomBar }
         .task(id: "\(search)|\(folderID.map(String.init) ?? "top")") {
             // Debounce: typing "github" is 6 keystrokes, not 6 SQL sweeps.
@@ -124,6 +130,7 @@ struct GridView: View {
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
             reload()
+        }
         }
     }
 
@@ -240,6 +247,7 @@ struct BookmarkTile: View {
     let store: any LibraryStore
     let hoverScale: CGFloat
     let dwellScale: CGFloat
+    let viewport: CGSize
     let isHovered: Bool
     let onHover: (Bool) -> Void
     let onChanged: (BookmarkRow) -> Void
@@ -254,6 +262,10 @@ struct BookmarkTile: View {
     /// a slow easeInOut crawl to dwellScale while the pointer stays put.
     @State private var zoom: CGFloat = 1
     @State private var dwellTask: Task<Void, Never>?
+    /// Where the scale pins the tile. Center for tiles with room; pushed
+    /// toward the tile's outer edge near the borders so growth goes inward
+    /// and the enlarged page stays fully on screen.
+    @State private var anchor: UnitPoint = .center
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -269,27 +281,59 @@ struct BookmarkTile: View {
         // Marked-for-removal reads as "going away" without hiding it — J
         // still needs to see it to change his mind.
         .opacity(row.markedForRemoval ? 0.35 : 1)
-        .scaleEffect(zoom)
+        .scaleEffect(zoom, anchor: anchor)
         .shadow(color: .black.opacity(zoom > 1 ? 0.35 : 0), radius: zoom > 1 ? 18 : 0, y: 4)
-        .onChange(of: isHovered) { _, inside in
-            dwellTask?.cancel()
-            if inside {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) { zoom = hoverScale }
-                dwellTask = Task {
-                    // Beat of stillness before the crawl starts, so sweeping
-                    // the pointer across the sheet doesn't balloon every tile
-                    // it crosses.
-                    try? await Task.sleep(for: .milliseconds(600))
-                    guard !Task.isCancelled else { return }
-                    withAnimation(.easeInOut(duration: 1.8)) { zoom = dwellScale }
+        .background(GeometryReader { geo in
+            // The zoom trigger lives inside GeometryReader because the anchor
+            // needs the tile's frame AT HOVER TIME — and it's computed once,
+            // for the final dwell size, so the growth direction never jumps
+            // mid-crawl. The anchor survives the shrink-back on purpose: the
+            // tile returns along the path it grew.
+            Color.clear.onChange(of: isHovered) { _, inside in
+                dwellTask?.cancel()
+                if inside {
+                    anchor = Self.edgeAwareAnchor(
+                        frame: geo.frame(in: .named("bmzViewport")),
+                        viewport: viewport, zoom: dwellScale)
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) { zoom = hoverScale }
+                    dwellTask = Task {
+                        // Beat of stillness before the crawl starts, so sweeping
+                        // the pointer across the sheet doesn't balloon every tile
+                        // it crosses.
+                        try? await Task.sleep(for: .milliseconds(600))
+                        guard !Task.isCancelled else { return }
+                        withAnimation(.easeInOut(duration: 1.8)) { zoom = dwellScale }
+                    }
+                } else {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) { zoom = 1 }
                 }
-            } else {
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) { zoom = 1 }
             }
-        }
+        })
         .onHover(perform: onHover)
         .onTapGesture(perform: open)
         .help(row.url)
+    }
+
+    /// Picks the scale anchor that keeps the fully-grown tile inside the
+    /// viewport. Per axis: the anchor point stays fixed while the rest
+    /// grows, so overflow on the leading side is anchor·growth and on the
+    /// trailing side (1−anchor)·growth — clamp the anchor into the band
+    /// where both fit, prefer center, and give up to center when the grown
+    /// tile simply cannot fit (best effort beats a lie).
+    static func edgeAwareAnchor(frame: CGRect, viewport: CGSize, zoom: CGFloat) -> UnitPoint {
+        guard zoom > 1 else { return .center }
+        func axis(lead: CGFloat, trail: CGFloat, grow: CGFloat) -> CGFloat {
+            guard grow > 0 else { return 0.5 }
+            let lo = max(0, 1 - trail / grow)   // any lower overflows the trailing edge
+            let hi = min(1, lead / grow)        // any higher overflows the leading edge
+            guard lo <= hi else { return 0.5 }
+            return min(max(0.5, lo), hi)
+        }
+        return UnitPoint(
+            x: axis(lead: frame.minX, trail: viewport.width - frame.maxX,
+                    grow: frame.width * (zoom - 1)),
+            y: axis(lead: frame.minY, trail: viewport.height - frame.maxY,
+                    grow: frame.height * (zoom - 1)))
     }
 
     // MARK: Pieces
