@@ -62,11 +62,7 @@ struct ContentView: View {
         }
         .safeAreaInset(edge: .bottom) {
             HStack {
-                Button {
-                    showImporter = true
-                } label: {
-                    Label("Import…", systemImage: "square.and.arrow.down")
-                }
+                ImportMenu(showImporter: $showImporter)
                 Spacer()
                 VPNSettingsButton()
             }
@@ -281,6 +277,49 @@ struct FolderPicker: View {
         }
         .buttonStyle(.plain)
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Import menu
+
+/// "Import" grew from one button into a menu the moment direct browser pull
+/// landed: a file picker at the top, then one row per detected profile.
+/// Detection re-runs on every open — profiles appear/disappear as browsers
+/// are installed or wiped, and a stale menu would offer dead paths.
+struct ImportMenu: View {
+    @Binding var showImporter: Bool
+    @EnvironmentObject private var manager: LibraryManager
+    @State private var profiles: [BrowserProfile] = []
+
+    var body: some View {
+        Menu {
+            Button {
+                showImporter = true
+            } label: {
+                Label("Import Bookmark File…", systemImage: "doc.badge.plus")
+            }
+
+            if !profiles.isEmpty {
+                Divider()
+                ForEach(profiles) { p in
+                    Button {
+                        manager.importBrowser(p)
+                    } label: {
+                        // Unreadable (Safari without Full Disk Access) stays
+                        // clickable on purpose: the resulting error carries
+                        // the fix instructions, a disabled row explains nothing.
+                        Label(p.readable ? p.displayLabel
+                                         : "\(p.displayLabel) — needs Full Disk Access",
+                              systemImage: p.kind.symbolName)
+                    }
+                }
+            }
+        } label: {
+            Label("Import…", systemImage: "square.and.arrow.down")
+        }
+        .onAppear { profiles = BrowserImporter.detectProfiles() }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 }
 

@@ -76,6 +76,26 @@ final class LibraryManager: ObservableObject {
         }
     }
 
+    /// Direct pull from an installed browser profile. Same landing path as a
+    /// picked file — content-hash dedupe included, so re-pulling an unchanged
+    /// profile selects the existing row instead of stacking copies.
+    func importBrowser(_ profile: BrowserProfile) {
+        do {
+            let info = try BrowserImporter.importProfile(profile, into: BMZ.librariesDirectory)
+            rescan()
+            selectedID = info.id
+            notice("Pulled \(profile.displayLabel) — \(info.bookmarkCount) bookmarks")
+        } catch ImportError.alreadyImported(let existing) {
+            rescan()
+            selectedID = existing.id
+            notice("\(profile.displayLabel) is unchanged since its last pull — selected it")
+        } catch {
+            // Safari's TCC denial lands here with the Full Disk Access
+            // instructions the data layer wrote; surface it verbatim.
+            fail("Browser pull failed: \(error.localizedDescription)")
+        }
+    }
+
     func notice(_ text: String) { banner = Banner(text: text, isError: false) }
     func fail(_ text: String)   { banner = Banner(text: text, isError: true) }
 }

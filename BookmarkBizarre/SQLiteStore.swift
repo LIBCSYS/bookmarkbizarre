@@ -34,7 +34,7 @@ enum ImportError: Error, CustomStringConvertible {
 
 /// Owns one prepared statement; finalize rides on deinit so early throws
 /// can't leak handles (a leaked statement keeps the whole DB locked).
-private final class Stmt {
+final class Stmt {   // internal for BrowserImport (read-only sweep of the places.sqlite snapshot)
     let ptr: OpaquePointer
     private let db: OpaquePointer
 
@@ -461,8 +461,37 @@ enum Importer {
         do { data = try Data(contentsOf: source) }
         catch { throw ImportError.unreadable(error.localizedDescription) }
 
+        // Latin-1 fallback: pre-UTF8 exports exist and Latin-1 decodes any
+        // byte sequence, so this path can't fail — it can only mangle high-bit
+        // characters, which beats refusing the whole file.
+        guard let text = String(data: data, encoding: .utf8)
+                ?? String(data: data, encoding: .isoLatin1) else {
+            throw ImportError.unreadable("not decodable as UTF-8 or Latin-1")
+        }
+
         let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let sha8 = String(sha.prefix(8))
+        return try importParsed(NetscapeParser.parse(text),
+                                sourceName: source.lastPathComponent,
+                                sourcePath: source.path,
+                                sourceSHA256: sha,
+                                sourceBytes: data.count,
+                                into: directory,
+                                extraMeta: ["source_kind": "file"])
+    }
+
+    /// Shared back half of every import: content-hash dedupe, DB creation,
+    /// fill, provenance stamping. importFile feeds it Netscape HTML;
+    /// BrowserImport.swift feeds it Chrome/Firefox/Safari trees. Everything
+    /// downstream (dup pass, inventory, UI) cannot tell the difference —
+    /// which is the point.  // internal for BrowserImport
+    static func importParsed(_ parsed: ParseResult,
+                             sourceName: String,
+                             sourcePath: String,
+                             sourceSHA256: String,
+                             sourceBytes: Int,
+                             into directory: URL,
+                             extraMeta: [String: String] = [:]) throws -> LibraryInfo {
+        let sha8 = String(sourceSHA256.prefix(8))
 
         // Same content already imported under ANY name → surface the existing
         // library instead of silently making a twin.
@@ -472,34 +501,25 @@ enum Importer {
             throw ImportError.alreadyImported(existing: try info(for: existing))
         }
 
-        // Latin-1 fallback: pre-UTF8 exports exist and Latin-1 decodes any
-        // byte sequence, so this path can't fail — it can only mangle high-bit
-        // characters, which beats refusing the whole file.
-        guard let text = String(data: data, encoding: .utf8)
-                ?? String(data: data, encoding: .isoLatin1) else {
-            throw ImportError.unreadable("not decodable as UTF-8 or Latin-1")
-        }
-
-        let stem = source.deletingPathExtension().lastPathComponent
+        let stem = (sourceName as NSString).deletingPathExtension
             .map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "_" }
             .reduce(into: "") { $0.append($1) }
         let dbURL = directory.appendingPathComponent("\(stem)__\(sha8).sqlite")
-
-        let parsed = NetscapeParser.parse(text)
 
         let db = try LibraryDB(at: dbURL, create: true)
         do {
             try db.createSchema()
             try db.fill(from: parsed)
             let iso = ISO8601DateFormatter().string(from: Date())
-            try db.setMeta("source_name", source.lastPathComponent)
-            try db.setMeta("source_path", source.path)
-            try db.setMeta("source_sha256", sha)
-            try db.setMeta("source_bytes", String(data.count))
+            try db.setMeta("source_name", sourceName)
+            try db.setMeta("source_path", sourcePath)
+            try db.setMeta("source_sha256", sourceSHA256)
+            try db.setMeta("source_bytes", String(sourceBytes))
             try db.setMeta("imported_at", iso)
             try db.setMeta("skipped_lines", String(parsed.skippedLines))
             try db.setMeta("app_version",
                 Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")
+            for (k, v) in extraMeta { try db.setMeta(k, v) }
         } catch {
             // Half-written DB is worse than no DB: the sidebar would list a
             // library that lies. This file is seconds old and app-created,
