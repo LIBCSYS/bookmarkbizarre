@@ -10,6 +10,7 @@ import AppKit
 struct GridView: View {
     let store: any LibraryStore
     let search: String
+    let folderID: Int?
     @EnvironmentObject private var manager: LibraryManager
 
     @State private var rows: [BookmarkRow] = []
@@ -18,19 +19,32 @@ struct GridView: View {
     /// Only one tile may be enlarged; tracking the id here (not per-tile)
     /// lets the grid raise that tile's zIndex so it draws over its neighbors.
     @State private var hoveredID: Int?
+    /// J's zoom dial: small = the whole file on one sheet, large = 3-5
+    /// across. Persisted — the size he settles on is a preference, not
+    /// per-session mood.
+    @AppStorage("gridTileSize") private var tileSize = 200.0
 
     private let pageSize = 400
+
+    /// Hover growth shrinks as tiles grow — 1.6× of an already-large tile
+    /// would punch past the window edge; a small tile needs the full jump
+    /// to reach "a good visible area".
+    private var hoverScale: CGFloat {
+        min(1.6, max(1.2, 340 / tileSize))
+    }
 
     var body: some View {
         ScrollView {
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 200, maximum: 260), spacing: 6)],
+                columns: [GridItem(.adaptive(minimum: tileSize, maximum: tileSize * 1.3),
+                                   spacing: 6)],
                 spacing: 6
             ) {
                 ForEach(rows) { row in
                     BookmarkTile(
                         row: row,
                         store: store,
+                        hoverScale: hoverScale,
                         isHovered: hoveredID == row.id,
                         onHover: { inside in
                             if inside {
@@ -53,25 +67,39 @@ struct GridView: View {
                 }
             }
             .padding(12)
-
-            footer
         }
-        .task(id: search) {
+        .safeAreaInset(edge: .bottom) { bottomBar }
+        .task(id: "\(search)|\(folderID.map(String.init) ?? "all")") {
             // Debounce: typing "github" is 6 keystrokes, not 6 SQL sweeps.
+            // Folder switches ride the same 250ms — imperceptible on a click.
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
             reload()
         }
     }
 
-    private var footer: some View {
-        HStack(spacing: 8) {
+    /// Count readout + the size dial, one thin bar under the sheet.
+    private var bottomBar: some View {
+        HStack(spacing: 10) {
             if loading { ProgressView().controlSize(.small) }
             Text(total == 0 ? "No bookmarks match" : "Showing \(rows.count) of \(total)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Spacer()
+            Image(systemName: "square.grid.4x3.fill")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+            Slider(value: $tileSize, in: 90...340)
+                .frame(width: 160)
+                .controlSize(.small)
+                .help("Tile size — small shows everything, large shows a few across")
+            Image(systemName: "square.grid.2x2.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
         }
-        .padding(.bottom, 16)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(.bar)
     }
 
     // MARK: - Data
@@ -111,6 +139,7 @@ struct GridView: View {
 struct BookmarkTile: View {
     let row: BookmarkRow
     let store: any LibraryStore
+    let hoverScale: CGFloat
     let isHovered: Bool
     let onHover: (Bool) -> Void
     let onChanged: (BookmarkRow) -> Void
@@ -136,7 +165,7 @@ struct BookmarkTile: View {
         // Marked-for-removal reads as "going away" without hiding it — J
         // still needs to see it to change his mind.
         .opacity(row.markedForRemoval ? 0.35 : 1)
-        .scaleEffect(isHovered ? 1.6 : 1)
+        .scaleEffect(isHovered ? hoverScale : 1)
         .shadow(color: .black.opacity(isHovered ? 0.35 : 0), radius: isHovered ? 18 : 0, y: 4)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isHovered)
         .onHover(perform: onHover)

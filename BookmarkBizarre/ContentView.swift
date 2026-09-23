@@ -162,13 +162,18 @@ struct LibraryDetailView: View {
     @Binding var search: String
     @EnvironmentObject private var manager: LibraryManager
     @State private var store: (any LibraryStore)?
+    // Folder scope for the grid. nil = whole file. The tree is loaded once
+    // per library alongside the store — 407 rows, not worth lazy-loading.
+    @State private var folderID: Int?
+    @State private var folderTree: [FolderNode] = []
+    @State private var folderNames: [Int: String] = [:]
 
     var body: some View {
         Group {
             if let store {
                 switch mode {
                 case .grid:
-                    GridView(store: store, search: search)
+                    GridView(store: store, search: search, folderID: folderID)
                 case .inventory:
                     InventoryView(store: store)
                 }
@@ -179,6 +184,13 @@ struct LibraryDetailView: View {
         }
         .searchable(text: $search, placement: .toolbar, prompt: "Filter title, URL, host")
         .toolbar {
+            // Folder scope only means anything in the grid; hiding it in
+            // inventory keeps the toolbar honest about what it affects.
+            if mode == .grid {
+                ToolbarItem(placement: .navigation) {
+                    FolderPicker(tree: folderTree, names: folderNames, selection: $folderID)
+                }
+            }
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $mode) {
                     ForEach(DetailMode.allCases) { m in
@@ -192,10 +204,83 @@ struct LibraryDetailView: View {
         .task(id: library.id) {
             do {
                 store = try openLibrary(at: library.fileURL)
+                let rows = try store?.folders() ?? []
+                folderTree = FolderNode.build(from: rows)
+                folderNames = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.name) })
             } catch {
                 manager.fail("Could not open \(library.name): \(error.localizedDescription)")
             }
         }
+    }
+}
+
+// MARK: - Folder picker
+
+/// Toolbar entry point for walking the folder tree: a button naming the
+/// current scope, a popover with the full outline. A Menu would work too,
+/// but 407 folders as nested submenus is a hedge maze — a scrollable tree
+/// with disclosure triangles matches how J already navigates them in the
+/// browser's own manager.
+struct FolderPicker: View {
+    let tree: [FolderNode]
+    let names: [Int: String]
+    @Binding var selection: Int?
+    @State private var showPopover = false
+
+    var body: some View {
+        Button {
+            showPopover = true
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: selection == nil ? "folder" : "folder.fill")
+                Text(selection.flatMap { names[$0] } ?? "All Folders")
+                    .lineLimit(1)
+                    .frame(maxWidth: 160)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .help("Show one folder's bookmarks")
+        .popover(isPresented: $showPopover, arrowEdge: .bottom) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    row(id: nil, name: "All Folders", count: nil, depth: 0)
+                    Divider()
+                        .padding(.vertical, 4)
+                    OutlineGroup(tree, children: \.children) { node in
+                        row(id: node.row.id, name: node.row.name,
+                            count: node.row.directCount, depth: 0)
+                    }
+                }
+                .padding(10)
+            }
+            .frame(width: 320, height: 420)
+        }
+    }
+
+    private func row(id: Int?, name: String, count: Int?, depth: Int) -> some View {
+        Button {
+            selection = id
+            showPopover = false
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: selection == id ? "checkmark.circle.fill" : "folder")
+                    .foregroundStyle(selection == id ? Color.accentColor : Color.secondary)
+                    .font(.system(size: 11))
+                Text(name.isEmpty ? "(untitled)" : name)
+                    .lineLimit(1)
+                Spacer()
+                if let count, count > 0 {
+                    Text("\(count)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 2)
     }
 }
 
