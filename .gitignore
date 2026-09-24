@@ -1,12 +1,8 @@
-# Xcode
 build/
 DerivedData/
 xcuserdata/
 *.xcuserstate
-
-# App output — libraries are user data, never source
-*.sqlite
-*.sqlite-journal
-
-# macOS
 .DS_Store
+# never commit real bookmark data
+*.sqlite
+bookmarks*.html
