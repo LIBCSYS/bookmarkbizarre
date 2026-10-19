@@ -18,13 +18,27 @@ final class LibraryManager: ObservableObject {
     @Published var selectedID: LibraryInfo.ID?
     @Published var banner: Banner?
 
+    /// `undo` turns a notice into "did X — Undo". Equality ignores the
+    /// closure (closures aren't comparable) and keys on a per-banner id, so
+    /// two identical texts in a row still count as two banners.
     struct Banner: Equatable {
+        let id = UUID()
         let text: String
         let isError: Bool
+        var undo: (() -> Void)? = nil
+        static func == (a: Banner, b: Banner) -> Bool { a.id == b.id }
     }
+
+    /// Libraries parked by "Remove Library", for the restore menu.
+    @Published var removed: [URL] = []
 
     init() {
         rescan()
+        // Re-key existing thumbnail captures once (wave 2). Skipped under
+        // XCTest: the test host must never rename J's real cache files.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            ThumbnailCacheMigration.runOnceIfNeeded(libraries: libraries.map(\.fileURL) + removed)
+        }
     }
 
     var selected: LibraryInfo? {
@@ -50,6 +64,40 @@ final class LibraryManager: ObservableObject {
         // the newest library rather than leaving a dead detail pane.
         if let sel = selectedID, !libraries.contains(where: { $0.id == sel }) {
             selectedID = libraries.first?.id
+        }
+        removed = Importer.removedLibraries()
+    }
+
+    // MARK: - Remove / restore
+
+    /// "Remove Library" (after the sidebar's confirmation). Moves the DB to
+    /// Libraries/Removed — the original bookmark file is never touched and
+    /// nothing is deleted. Undo rides on the banner; after that the restore
+    /// menu still has it.
+    func removeLibrary(_ lib: LibraryInfo) {
+        do {
+            let parked = try Importer.remove(dbURL: lib.fileURL)
+            rescan()
+            banner = Banner(text: "Removed \(lib.name) from the sidebar — file kept in Libraries/Removed",
+                            isError: false,
+                            undo: { [weak self] in self?.restoreLibrary(parked) })
+        } catch {
+            fail("Remove failed: \(error.localizedDescription)")
+        }
+    }
+
+    func restoreLibrary(_ parked: URL) {
+        do {
+            let info = try Importer.restore(removedURL: parked, into: BMZ.librariesDirectory)
+            rescan()
+            selectedID = info.id
+            notice("Restored \(info.name)")
+        } catch ImportError.alreadyImported(let existing) {
+            rescan()
+            selectedID = existing.id
+            fail("\(existing.name) was re-imported since it was removed — kept the current copy, parked one is still in Libraries/Removed")
+        } catch {
+            fail("Restore failed: \(error.localizedDescription)")
         }
     }
 
@@ -97,5 +145,8 @@ final class LibraryManager: ObservableObject {
     }
 
     func notice(_ text: String) { banner = Banner(text: text, isError: false) }
+    func undoable(_ text: String, undo: @escaping () -> Void) {
+        banner = Banner(text: text, isError: false, undo: undo)
+    }
     func fail(_ text: String)   { banner = Banner(text: text, isError: true) }
 }

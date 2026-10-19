@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  BookmarkBizarre app icon — source of truth. Rendered to every macOS size by
+  design/render_icon.swift. 1024 canvas, 824 body per Apple's macOS icon grid
+  (100px transparent margin so the Dock shadow has room).
+  Idea: the app's wall of page tiles (3x3), with one tile popped out of line,
+  turned into a bookmark ribbon and knocked askew. That's the "bizarre".
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#23264A"/>
+      <stop offset="1" stop-color="#0E0F22"/>
+    </linearGradient>
+    <linearGradient id="ribbon" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FF5A7A"/>
+      <stop offset="1" stop-color="#E8215A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- body -->
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#body)"/>
+
+  <!-- the wall: 3x3 tiles, 200px cells, 36px gutters, centered -->
+  <g fill="#E9ECF8">
+    <rect x="182" y="182" width="200" height="200" rx="34"/>
+    <rect x="412" y="182" width="200" height="200" rx="34"/>
+    <rect x="642" y="182" width="200" height="200" rx="34"/>
+    <rect x="182" y="412" width="200" height="200" rx="34"/>
+    <!-- center tile left empty: its ribbon is out of line -->
+    <rect x="642" y="412" width="200" height="200" rx="34"/>
+    <rect x="182" y="642" width="200" height="200" rx="34"/>
+    <rect x="412" y="642" width="200" height="200" rx="34"/>
+    <rect x="642" y="642" width="200" height="200" rx="34"/>
+  </g>
+
+  <!-- the escaped tile: a bookmark ribbon, enlarged and tilted -->
+  <g transform="rotate(-14 512 500)">
+    <path d="M 422 330
+             Q 422 300 452 300
+             L 572 300
+             Q 602 300 602 330
+             L 602 690
+             L 512 618
+             L 422 690 Z"
+          fill="url(#ribbon)" stroke="#0E0F22" stroke-width="22" stroke-linejoin="round"/>
+  </g>
+</svg>

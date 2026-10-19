@@ -8,6 +8,7 @@
 
 /* Begin PBXFileReference section */
 		BB00000000000000000B0005 /* BookmarkBizarre.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BookmarkBizarre.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB00000000000000000T0005 /* BookmarkBizarreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BookmarkBizarreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +17,22 @@
 			path = BookmarkBizarre;
 			sourceTree = "<group>";
 		};
+		BB00000000000000000T0001 /* BookmarkBizarreTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BookmarkBizarreTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		BB00000000000000000B0002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB00000000000000000T0002 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +46,7 @@
 			isa = PBXGroup;
 			children = (
 				BB00000000000000000B0001 /* BookmarkBizarre */,
+				BB00000000000000000T0001 /* BookmarkBizarreTests */,
 				BB00000000000000000B0004 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +55,7 @@
 			isa = PBXGroup;
 			children = (
 				BB00000000000000000B0005 /* BookmarkBizarre.app */,
+				BB00000000000000000T0005 /* BookmarkBizarreTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +85,29 @@
 			productReference = BB00000000000000000B0005 /* BookmarkBizarre.app */;
 			productType = "com.apple.product-type.application";
 		};
+		BB00000000000000000T0006 /* BookmarkBizarreTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB00000000000000000T0007 /* Build configuration list for PBXNativeTarget "BookmarkBizarreTests" */;
+			buildPhases = (
+				BB00000000000000000T0008 /* Sources */,
+				BB00000000000000000T0002 /* Frameworks */,
+				BB00000000000000000T0009 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB00000000000000000T0011 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				BB00000000000000000T0001 /* BookmarkBizarreTests */,
+			);
+			name = BookmarkBizarreTests;
+			packageProductDependencies = (
+			);
+			productName = BookmarkBizarreTests;
+			productReference = BB00000000000000000T0005 /* BookmarkBizarreTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -82,6 +120,10 @@
 				TargetAttributes = {
 					BB00000000000000000B0006 = {
 						CreatedOnToolsVersion = 16.0;
+					};
+					BB00000000000000000T0006 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = BB00000000000000000B0006;
 					};
 				};
 			};
@@ -100,12 +142,20 @@
 			projectRoot = "";
 			targets = (
 				BB00000000000000000B0006 /* BookmarkBizarre */,
+				BB00000000000000000T0006 /* BookmarkBizarreTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		BB00000000000000000B0009 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB00000000000000000T0009 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +172,32 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BB00000000000000000T0008 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BB00000000000000000T0011 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BB00000000000000000B0006 /* BookmarkBizarre */;
+			targetProxy = BB00000000000000000T0010 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		BB00000000000000000T0010 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BB00000000000000000B000A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB00000000000000000B0006;
+			remoteInfo = BookmarkBizarre;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin XCBuildConfiguration section */
 		BB00000000000000000B000C /* Debug */ = {
@@ -195,7 +270,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = nyc.jelia.bookmarkbizarre;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -222,11 +297,45 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = nyc.jelia.bookmarkbizarre;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		BB00000000000000000T000E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 46AXDWA6F8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = nyc.jelia.bookmarkbizarre.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BookmarkBizarre.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BookmarkBizarre";
+			};
+			name = Debug;
+		};
+		BB00000000000000000T000F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 46AXDWA6F8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = nyc.jelia.bookmarkbizarre.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BookmarkBizarre.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BookmarkBizarre";
 			};
 			name = Release;
 		};
@@ -247,6 +356,15 @@
 			buildConfigurations = (
 				BB00000000000000000B000C /* Debug */,
 				BB00000000000000000B000D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BB00000000000000000T0007 /* Build configuration list for PBXNativeTarget "BookmarkBizarreTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB00000000000000000T000E /* Debug */,
+				BB00000000000000000T000F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

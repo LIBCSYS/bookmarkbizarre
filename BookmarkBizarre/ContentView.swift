@@ -23,6 +23,8 @@ struct ContentView: View {
     @State private var folderID: Int?
     @State private var folderRows: [FolderRow] = []
     @State private var folderTree: [FolderNode] = []
+    /// Library awaiting the "Remove Library" confirmation.
+    @State private var pendingRemoval: LibraryInfo?
 
     var body: some View {
         NavigationSplitView {
@@ -80,6 +82,14 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                     }
                     .tag(lib.id)
+                    .contextMenu {
+                        Button("Remove Library…", systemImage: "minus.circle") {
+                            pendingRemoval = lib
+                        }
+                        Button("Show in Finder", systemImage: "folder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([lib.fileURL])
+                        }
+                    }
                 }
             }
 
@@ -99,10 +109,37 @@ struct ContentView: View {
                 }
             }
         }
+        // Delete key on the selected library = the same confirmed removal
+        .onDeleteCommand {
+            if let lib = manager.selected { pendingRemoval = lib }
+        }
+        .confirmationDialog(
+            "Remove “\(pendingRemoval?.name ?? "")” from BookmarkBizarre?",
+            isPresented: Binding(get: { pendingRemoval != nil },
+                                 set: { if !$0 { pendingRemoval = nil } }),
+            presenting: pendingRemoval
+        ) { lib in
+            Button("Remove Library", role: .destructive) { manager.removeLibrary(lib) }
+            Button("Cancel", role: .cancel) {}
+        } message: { lib in
+            Text("It leaves the sidebar only. Nothing is deleted: the library database moves to Libraries/Removed (restore it from the Import menu), and your original bookmark file\(lib.sourcePath.isEmpty ? "" : " at \(lib.sourcePath)") is not touched.")
+        }
         .safeAreaInset(edge: .bottom) {
             HStack {
                 ImportMenu(showImporter: $showImporter)
                 Spacer()
+                if folderID != nil {
+                    // Sidebar-side clear for the folder filter, mirrored by
+                    // the chip in the grid header.
+                    Button {
+                        folderID = nil
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .help("Clear folder filter — show all bookmarks")
+                }
                 VPNSettingsButton()
             }
             .padding(10)
@@ -190,6 +227,12 @@ struct ContentView: View {
                 Text(b.text)
                     .lineLimit(2)
                 Spacer(minLength: 12)
+                if let undo = b.undo {
+                    Button("Undo") {
+                        manager.banner = nil
+                        undo()
+                    }
+                }
                 Button {
                     manager.banner = nil
                 } label: {
@@ -209,7 +252,9 @@ struct ContentView: View {
                 // Notices clear themselves; errors stay until dismissed —
                 // an error that vanishes on its own was never read.
                 guard !b.isError else { return }
-                try? await Task.sleep(for: .seconds(4))
+                // Undo offers linger: a 4-second window to change your mind
+                // about a removal is a trap, not an affordance.
+                try? await Task.sleep(for: .seconds(b.undo == nil ? 4 : 12))
                 if manager.banner == b { manager.banner = nil }
             }
         }
@@ -237,7 +282,13 @@ struct LibraryDetailView: View {
                     GridView(store: store, search: search,
                              folderID: $folderID, folderRows: folderRows)
                 case .inventory:
-                    InventoryView(store: store)
+                    // The inventory's folder tree drives the grid filter too:
+                    // click a folder there and land on its pages.
+                    InventoryView(store: store) { id in
+                        folderID = id
+                        search = ""
+                        mode = .grid
+                    }
                 }
             } else {
                 ProgressView()
@@ -285,6 +336,15 @@ struct ImportMenu: View {
                 Label("Import Bookmark File…", systemImage: "doc.badge.plus")
             }
 
+            if !manager.removed.isEmpty {
+                Divider()
+                Menu("Restore Removed Library", systemImage: "arrow.uturn.backward.circle") {
+                    ForEach(manager.removed, id: \.self) { url in
+                        Button(Self.displayName(url)) { manager.restoreLibrary(url) }
+                    }
+                }
+            }
+
             if !profiles.isEmpty {
                 Divider()
                 ForEach(profiles) { p in
@@ -306,6 +366,12 @@ struct ImportMenu: View {
         .onAppear { profiles = BrowserImporter.detectProfiles() }
         .menuStyle(.borderlessButton)
         .fixedSize()
+    }
+
+    /// "bookmarks_9_18_26__5fdb9af8.removed-17…" → "bookmarks_9_18_26"
+    static func displayName(_ url: URL) -> String {
+        let stem = url.deletingPathExtension().lastPathComponent
+        return stem.components(separatedBy: "__").first ?? stem
     }
 }
 

@@ -5,7 +5,7 @@ import CryptoKit
 
 // ============================================================================
 // ThumbnailProvider — turns a bookmark into a picture, three tiers deep:
-//   1. disk/memory cache (sha256(url).png in Application Support)
+//   1. disk/memory cache (sha256(normalized url)@800.png in Application Support)
 //   2. live WKWebView snapshot, on demand, max 3 in flight
 //   3. placeholder: the export's embedded favicon, else a letter card
 //
@@ -57,10 +57,12 @@ final class ThumbnailProvider {
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https" else { return nil }
 
-        let key = Self.cacheKey(row.url)
+        // Keyed on the PAGE, not the saved string: dup-group members that
+        // differ only by a utm_ trail or a trailing slash share one capture.
+        let key = Self.cacheKey(row.normURL)
         if let hit = memory[key] { return hit }
         if failed.contains(key) { return nil }
-        if let disk = loadDisk(key) {
+        if let disk = loadDisk(key) ?? adoptLegacy(rawURL: row.url, as: key) {
             memory[key] = disk
             return disk
         }
@@ -141,11 +143,26 @@ final class ThumbnailProvider {
 
     // MARK: - Disk cache
 
-    static func cacheKey(_ url: String) -> String {
+    /// Pass the NORMALIZED url (BookmarkRow.normURL). Raw strings still
+    /// hash fine — that is exactly what the pre-wave-2 keys were.
+    nonisolated static func cacheKey(_ url: String) -> String {
         // "@800" is a cache generation stamp: dwell-zoom made 400px captures
         // readably blurry, so the resolution doubled — suffixing the key
         // orphans the old files (harmless) instead of serving them soft.
         SHA256.hash(data: Data(url.utf8)).map { String(format: "%02x", $0) }.joined() + "@800"
+    }
+
+    /// Lazy half of the key migration: a capture saved under the old
+    /// raw-url key is renamed onto the normalized key the first time its
+    /// tile asks. The launch-time sweep (ThumbnailCacheMigration) catches
+    /// everything in the existing libraries; this catches the stragglers.
+    private func adoptLegacy(rawURL: String, as key: String) -> NSImage? {
+        let legacy = Self.cacheKey(rawURL)
+        guard legacy != key, let img = loadDisk(legacy) else { return nil }
+        let dir = BMZ.thumbnailDirectory
+        try? FileManager.default.moveItem(at: dir.appendingPathComponent(legacy + ".png"),
+                                          to: dir.appendingPathComponent(key + ".png"))
+        return img
     }
 
     private func loadDisk(_ key: String) -> NSImage? {
@@ -216,6 +233,62 @@ final class ThumbnailProvider {
             y: (Self.cardSize.height - bounds.height) / 2))
         img.unlockFocus()
         return img
+    }
+}
+
+// MARK: - Cache key migration (raw url → normalized url)
+
+/// Wave 2 re-keyed the thumbnail cache from sha256(raw url) to
+/// sha256(normalized url). Without this sweep every capture J already paid
+/// for would look missing and get re-fetched. Files are RENAMED, never
+/// deleted: when several raw URLs collapse onto one normalized key the
+/// first one moves and the rest stay put as harmless orphans.
+enum ThumbnailCacheMigration {
+    static let doneKey = "thumbnailCacheKeyScheme"
+    static let currentScheme = 2
+
+    struct Result: Equatable { var moved = 0; var alreadyCurrent = 0; var orphaned = 0 }
+
+    /// Pure file work — takes the URL list and the directory, so tests can
+    /// point it at a temp folder.
+    @discardableResult
+    static func migrate(rawURLs: [String], in directory: URL) -> Result {
+        let fm = FileManager.default
+        var result = Result()
+        for raw in Set(rawURLs) {
+            let old = ThumbnailProvider.cacheKey(raw)
+            let new = ThumbnailProvider.cacheKey(URLNormalizer.normalize(raw))
+            let oldFile = directory.appendingPathComponent(old + ".png")
+            guard old != new, fm.fileExists(atPath: oldFile.path) else {
+                if old == new { result.alreadyCurrent += 1 }
+                continue
+            }
+            let newFile = directory.appendingPathComponent(new + ".png")
+            if fm.fileExists(atPath: newFile.path) {
+                result.orphaned += 1          // a sibling already claimed the key
+            } else if (try? fm.moveItem(at: oldFile, to: newFile)) != nil {
+                result.moved += 1
+            }
+        }
+        return result
+    }
+
+    /// Launch hook: one sweep over every library (sidebar AND parked ones),
+    /// then a UserDefaults stamp so it never runs again.
+    static func runOnceIfNeeded(libraries: [URL]) {
+        let defaults = UserDefaults.standard
+        guard defaults.integer(forKey: doneKey) < currentScheme else { return }
+        var urls: [String] = []
+        for lib in libraries {
+            guard let db = try? openLibrary(at: lib),
+                  let total = try? db.bookmarkTotal(search: "", scope: .all),
+                  let rows = try? db.bookmarks(search: "", scope: .all, limit: total, offset: 0)
+            else { continue }
+            urls += rows.map(\.url)
+        }
+        let r = migrate(rawURLs: urls, in: BMZ.thumbnailDirectory)
+        defaults.set(currentScheme, forKey: doneKey)
+        NSLog("BookmarkBizarre thumbnail re-key: moved %d, orphaned %d", r.moved, r.orphaned)
     }
 }
 

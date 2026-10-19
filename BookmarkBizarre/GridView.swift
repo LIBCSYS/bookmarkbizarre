@@ -103,7 +103,8 @@ struct GridView: View {
                             },
                             onChanged: { apply($0) },
                             onNotice: { manager.notice($0) },
-                            onError: { manager.fail($0) }
+                            onError: { manager.fail($0) },
+                            onUndoable: { manager.undoable($0, undo: $1) }
                         )
                         // The overlay copy is the visible one while hovered —
                         // hiding the original prevents double-vision under it.
@@ -144,6 +145,7 @@ struct GridView: View {
                     },
                     onNotice: { manager.notice($0) },
                     onError: { manager.fail($0) },
+                    onUndoable: { manager.undoable($0, undo: $1) },
                     onDismiss: { hoveredRow = nil }
                 )
                 // Fresh instance per tile: zoom state must not carry over
@@ -180,6 +182,25 @@ struct GridView: View {
                     crumb(name: f.name.isEmpty ? "(untitled)" : f.name,
                           symbol: nil,
                           isCurrent: f.id == folderID) { folderID = f.id }
+                }
+                if folderID != nil {
+                    Spacer(minLength: 12)
+                    // Explicit "this is a filter" readout + one-click clear:
+                    // the breadcrumb alone doesn't say that subfolders count.
+                    Button {
+                        folderID = nil
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Filtered: this folder + subfolders")
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.accentColor.opacity(0.15), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear the folder filter — show the whole library")
                 }
             }
             .lineLimit(1)
@@ -285,6 +306,7 @@ struct HoverZoom: View {
     let onChanged: (BookmarkRow) -> Void
     let onNotice: (String) -> Void
     let onError: (String) -> Void
+    let onUndoable: (String, @escaping () -> Void) -> Void
     let onDismiss: () -> Void
 
     @State private var zoom: CGFloat = 1
@@ -299,7 +321,8 @@ struct HoverZoom: View {
             onHover: { inside, _ in if !inside { dismiss() } },
             onChanged: onChanged,
             onNotice: onNotice,
-            onError: onError
+            onError: onError,
+            onUndoable: onUndoable
         )
         .frame(width: baseFrame.width, height: baseFrame.height)
         .scaleEffect(zoom, anchor: anchor)
@@ -368,6 +391,8 @@ struct BookmarkTile: View {
     let onChanged: (BookmarkRow) -> Void
     let onNotice: (String) -> Void
     let onError: (String) -> Void
+    /// Notice with an Undo button (collection delete).
+    var onUndoable: (String, @escaping () -> Void) -> Void = { _, _ in }
 
     @AppStorage(BMZ.vpnClientPathKey) private var vpnClientPath = ""
     @State private var showRename = false
@@ -478,7 +503,8 @@ struct BookmarkTile: View {
                 showCollect = true
             }
             .popover(isPresented: $showCollect, arrowEdge: .trailing) {
-                CollectPopover(row: row, store: store, onNotice: onNotice, onError: onError)
+                CollectPopover(row: row, store: store, onNotice: onNotice, onError: onError,
+                               onUndoable: onUndoable)
             }
         }
         .padding(.vertical, 8)
@@ -594,10 +620,17 @@ struct CollectPopover: View {
     let store: any LibraryStore
     let onNotice: (String) -> Void
     let onError: (String) -> Void
+    let onUndoable: (String, @escaping () -> Void) -> Void
 
     @State private var names: [String] = []
     @State private var membership: Set<String> = []
     @State private var newName = ""
+    /// Collection whose trash button was pressed — confirmation is inline
+    /// in the row, because a sheet/alert raised from a popover dismisses it.
+    @State private var confirmingDelete: String?
+    @State private var memberCounts: [String: Int] = [:]
+    /// Last delete, kept so the popover can undo in place as well as the banner.
+    @State private var lastDeleted: (name: String, members: Set<Int>)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -610,17 +643,49 @@ struct CollectPopover: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(names, id: \.self) { name in
-                    HStack {
-                        Button {
-                            toggle(name)
-                        } label: {
-                            Label(name, systemImage: membership.contains(name) ? "checkmark.square.fill" : "square")
+                    if confirmingDelete == name {
+                        HStack {
+                            Text("Delete “\(name)”? Its \(memberCounts[name] ?? 0) links stay in the library.")
+                                .font(.caption)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer()
+                            Button("Cancel") { confirmingDelete = nil }
+                                .controlSize(.small)
+                            Button("Delete", role: .destructive) { deleteCollection(name) }
+                                .controlSize(.small)
                         }
-                        .buttonStyle(.plain)
-                        Spacer()
-                        Button("Export…") { exportFile(name) }
+                    } else {
+                        HStack {
+                            Button {
+                                toggle(name)
+                            } label: {
+                                Label(name, systemImage: membership.contains(name) ? "checkmark.square.fill" : "square")
+                            }
+                            .buttonStyle(.plain)
+                            Spacer()
+                            Button("Export…") { exportFile(name) }
+                                .controlSize(.small)
+                            Button {
+                                confirmingDelete = name
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
                             .controlSize(.small)
+                            .help("Delete this collection (the bookmarks themselves stay)")
+                        }
                     }
+                }
+            }
+
+            if let last = lastDeleted {
+                HStack {
+                    Text("Deleted “\(last.name)”")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Undo") { restore(last.name, last.members) }
+                        .controlSize(.small)
                 }
             }
 
@@ -643,11 +708,43 @@ struct CollectPopover: View {
     private func load() {
         do {
             names = try store.collections()
-            membership = Set(try names.filter { name in
-                try store.collectionMembers(name: name).contains(row.id)
-            })
+            var counts: [String: Int] = [:]
+            var mine: Set<String> = []
+            for name in names {
+                let members = try store.collectionMembers(name: name)
+                counts[name] = members.count
+                if members.contains(row.id) { mine.insert(name) }
+            }
+            memberCounts = counts
+            membership = mine
         } catch {
             onError("Collections failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func deleteCollection(_ name: String) {
+        confirmingDelete = nil
+        do {
+            let members = try store.deleteCollection(name: name)
+            lastDeleted = (name, members)
+            load()
+            let store = self.store
+            onUndoable("Deleted collection “\(name)” — its \(members.count) bookmarks are untouched") {
+                try? store.restoreCollection(name: name, members: members)
+            }
+        } catch {
+            onError("Delete failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func restore(_ name: String, _ members: Set<Int>) {
+        do {
+            try store.restoreCollection(name: name, members: members)
+            lastDeleted = nil
+            load()
+            onNotice("Restored collection “\(name)”")
+        } catch {
+            onError("Restore failed: \(error.localizedDescription)")
         }
     }
 

@@ -9,6 +9,8 @@ import SwiftUI
 
 struct InventoryView: View {
     let store: any LibraryStore
+    /// Folder tapped in the tree → the grid, filtered to that subtree.
+    var onOpenFolder: ((Int) -> Void)? = nil
     @EnvironmentObject private var manager: LibraryManager
 
     @State private var inv: Inventory?
@@ -142,6 +144,15 @@ struct InventoryView: View {
                             Text(node.row.directCount.formatted())
                                 .font(.callout.monospacedDigit())
                                 .foregroundStyle(.secondary)
+                        }
+                        if let onOpenFolder {
+                            Button {
+                                onOpenFolder(node.row.id)
+                            } label: {
+                                Image(systemName: "square.grid.3x3")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Show this folder and its subfolders in the grid")
                         }
                     }
                     .padding(.vertical, 2)

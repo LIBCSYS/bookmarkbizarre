@@ -52,6 +52,14 @@ struct BookmarkRow: Identifiable, Hashable {
     let iconURI: String?      // data: favicon Chrome embeds, verbatim
     var markedForRemoval: Bool
     var requiresVPN: Bool
+
+    /// Identity of the PAGE rather than the string that was saved: the key
+    /// thumbnails are cached under, so dup-group members that differ only
+    /// cosmetically (utm_ trail, trailing slash, :443) share one capture.
+    /// Computed, not stored — DBs imported before wave 2 carry norm_url
+    /// values from the older rules, and the cache key must not depend on
+    /// which app version did the import.
+    var normURL: String { URLNormalizer.normalize(url) }
 }
 
 /// Which slice of the file a bookmark query covers. Explorer semantics per
@@ -119,6 +127,15 @@ protocol LibraryStore: AnyObject {
     func collectionMembers(name: String) throws -> Set<Int>
     @discardableResult
     func exportCollection(name: String, to destination: URL) throws -> Int  // returns links written
+
+    /// Drops a collection. Only the grouping goes — every member bookmark
+    /// stays in the library untouched. Returns the member ids so the caller
+    /// can offer Undo by handing them straight back to restoreCollection.
+    @discardableResult
+    func deleteCollection(name: String) throws -> Set<Int>
+    /// Re-creates a collection from a deleteCollection result, in one
+    /// transaction. Ids that no longer exist are skipped, not fatal.
+    func restoreCollection(name: String, members: Set<Int>) throws
 }
 
 // MARK: - Data-layer entry points (implemented in SQLiteStore.swift / Headless.swift)
@@ -133,6 +150,13 @@ protocol LibraryStore: AnyObject {
 //       static func importFile(at source: URL, into directory: URL) throws -> LibraryInfo
 //       /// Reads LibraryInfo back off an existing .sqlite (sidebar rescan).
 //       static func info(for dbURL: URL) throws -> LibraryInfo
+//       /// "Remove Library": MOVES the .sqlite into BMZ.removedLibrariesDirectory
+//       /// (out of the sidebar scan, nothing deleted) and returns where it went.
+//       /// The original bookmark .html is never touched — the app never owned it.
+//       static func remove(dbURL: URL, parkingIn: URL = BMZ.removedLibrariesDirectory) throws -> URL
+//       /// Undo of remove: moves a parked .sqlite back into the scan directory.
+//       /// Throws if an identical import has reappeared there since.
+//       static func restore(removedURL: URL, into directory: URL) throws -> LibraryInfo
 //   }
 //
 //   enum Headless {
@@ -142,6 +166,78 @@ protocol LibraryStore: AnyObject {
 //       /// process has no --import argument.
 //       static func runIfNeeded()
 //   }
+
+// MARK: - URL normalization (shared by import dedupe AND the thumbnail cache)
+
+/// One definition of "the same page", used by both layers: the importer's
+/// dup groups and the UI's thumbnail cache key. Two rules diverging is how
+/// a dup group ends up capturing the same site twice.
+///
+/// Rules: lowercase scheme + host; drop default ports (80/443/21) but KEEP
+/// any other port (example.com:8080 is a different server); drop user:pass;
+/// drop trailing slashes on the path; drop the fragment; drop click-tracking
+/// query params (utm_*, fbclid, gclid, ...); sort what's left so param order
+/// can't split a group. Path and query case are preserved — servers are
+/// allowed to treat them as case-sensitive, and many do.
+enum URLNormalizer {
+
+    /// Params that identify a CLICK, not a page.
+    static let trackingParams: Set<String> =
+        ["gclid", "gclsrc", "dclid", "fbclid", "msclkid", "mc_cid", "mc_eid", "igshid", "ref_src"]
+
+    private static let defaultPorts: [String: Int] = ["http": 80, "https": 443, "ftp": 21]
+
+    static func normalize(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let c = URLComponents(string: trimmed),
+              let scheme = c.scheme?.lowercased(),
+              let rawHost = c.percentEncodedHost, !rawHost.isEmpty else {
+            return fallback(trimmed)
+        }
+        var host = rawHost.lowercased()
+        // URLComponents hands IPv6 literals back without brackets on some
+        // OS versions; the brackets are what keep the port parseable.
+        if host.contains(":") && !host.hasPrefix("[") { host = "[\(host)]" }
+
+        var port = ""
+        if let p = c.port, defaultPorts[scheme] != p { port = ":\(p)" }
+
+        var path = c.percentEncodedPath
+        while path.hasSuffix("/") { path.removeLast() }   // "/", "/a/" → "", "/a"
+
+        var query = ""
+        if let q = c.percentEncodedQuery, !q.isEmpty {
+            let kept = q.split(separator: "&").filter { pair in
+                let name = pair.split(separator: "=", maxSplits: 1).first.map(String.init)?.lowercased() ?? ""
+                return !name.isEmpty && !(name.hasPrefix("utm_") || trackingParams.contains(name))
+            }.map(String.init).sorted()
+            if !kept.isEmpty { query = "?" + kept.joined(separator: "&") }
+        }
+        return "\(scheme)://\(host)\(port)\(path)\(query)"
+    }
+
+    /// Malformed URLs (spaces, stray unicode) that URLComponents refuses.
+    /// With a recoverable scheme + host → "scheme://host"; without one
+    /// (javascript:, data:, mailto:) the raw string IS the identity —
+    /// lowercasing a bookmarklet would corrupt it.
+    private static func fallback(_ raw: String) -> String {
+        guard let (scheme, host) = schemeAndHost(ofMalformed: raw) else { return raw }
+        return "\(scheme)://\(host)"
+    }
+
+    /// Regex salvage of scheme + host from a string URLComponents rejected:
+    /// host = whatever sits between // and the next / ? #, with user:pass@
+    /// and :port peeled off. Shared with URLParts so the two never disagree.
+    static func schemeAndHost(ofMalformed raw: String) -> (scheme: String, host: String)? {
+        guard let s = raw.range(of: #"^[A-Za-z][A-Za-z0-9+.\-]*:"#, options: .regularExpression),
+              let h = raw.range(of: #"//[^/?#]+"#, options: .regularExpression) else { return nil }
+        var host = String(raw[h].dropFirst(2))
+        if let at = host.lastIndex(of: "@") { host = String(host[host.index(after: at)...]) }
+        if let colon = host.firstIndex(of: ":") { host = String(host[..<colon]) }
+        guard !host.isEmpty else { return nil }
+        return (String(raw[s].dropLast()).lowercased(), host.lowercased())
+    }
+}
 
 // MARK: - VPN heuristic (import-time, data layer owns it)
 //
@@ -163,7 +259,15 @@ enum BMZ {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
-    /// Thumbnail PNG cache, keyed by sha256(norm_url).png — UI layer owns
+    /// "Remove Library" parking lot. A subfolder on purpose: the sidebar scan
+    /// and the import dedupe both list Libraries/ non-recursively, so a parked
+    /// DB is invisible to both, yet one Finder hop from recovery.
+    static var removedLibrariesDirectory: URL {
+        let dir = librariesDirectory.appendingPathComponent("Removed", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+    /// Thumbnail PNG cache, keyed by sha256(URLNormalizer.normalize(url))@800.png — UI layer owns
     /// writes, but the path lives here so a future cleanup pass can find it.
     static var thumbnailDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

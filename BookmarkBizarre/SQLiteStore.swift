@@ -452,6 +452,37 @@ final class LibraryDB: LibraryStore {
         return count
     }
 
+    @discardableResult
+    func deleteCollection(name: String) throws -> Set<Int> {
+        // Members are read first and handed back: the collections table is
+        // the ONLY thing touched — no bookmark row is ever deleted here — and
+        // the returned set is the whole Undo payload.
+        let members = try collectionMembers(name: name)
+        try run("DELETE FROM collections WHERE name = ?", [.text(name)])
+        return members
+    }
+
+    func restoreCollection(name: String, members: Set<Int>) throws {
+        try exec("BEGIN")
+        do {
+            // INSERT ... SELECT against bookmarks, so an id that vanished in
+            // between can't trip the foreign key — it simply isn't restored.
+            let s = try Stmt(db!, """
+                INSERT OR IGNORE INTO collections(name, bookmark_id)
+                SELECT ?, id FROM bookmarks WHERE id = ?
+                """)
+            for id in members.sorted() {
+                try s.bind([.text(name), .int(id)])
+                try s.step()
+                s.reset()
+            }
+            try exec("COMMIT")
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
+    }
+
     /// Escape for both attribute values and element text. & first or the
     /// escapes escape each other.
     private static func escape(_ s: String) -> String {
@@ -542,6 +573,69 @@ enum Importer {
             throw error
         }
         return try info(for: dbURL)
+    }
+
+    /// "Remove Library" — a MOVE into the Removed/ parking folder, never a
+    /// delete. The sidebar scan and import dedupe only list the top level,
+    /// so the library disappears from the app while the file survives.
+    /// A name collision in Removed/ (same file removed twice across
+    /// re-imports) gets a timestamp suffix rather than overwriting.
+    @discardableResult
+    static func remove(dbURL: URL, parkingIn parked: URL = BMZ.removedLibrariesDirectory) throws -> URL {
+        let fm = FileManager.default
+        try fm.createDirectory(at: parked, withIntermediateDirectories: true)
+        var dest = parked.appendingPathComponent(dbURL.lastPathComponent)
+        if fm.fileExists(atPath: dest.path) {
+            let stamp = Int(Date().timeIntervalSince1970)
+            dest = parked.appendingPathComponent(
+                "\(dbURL.deletingPathExtension().lastPathComponent).removed-\(stamp).sqlite")
+        }
+        try fm.moveItem(at: dbURL, to: dest)
+        // SQLite side files travel with their DB, or the moved copy opens
+        // without its last uncheckpointed writes.
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let side = URL(fileURLWithPath: dbURL.path + suffix)
+            if fm.fileExists(atPath: side.path) {
+                try? fm.moveItem(at: side, to: URL(fileURLWithPath: dest.path + suffix))
+            }
+        }
+        return dest
+    }
+
+    /// Undo / "Restore Removed Library". Lands back under the canonical
+    /// "<stem>__<sha8>.sqlite" name; refuses if that content was re-imported
+    /// in the meantime — two sidebar rows for one file is the bug dedupe exists
+    /// to prevent.
+    static func restore(removedURL: URL, into directory: URL) throws -> LibraryInfo {
+        let fm = FileManager.default
+        var name = removedURL.lastPathComponent
+        if let r = name.range(of: #"\.removed-\d+\.sqlite$"#, options: .regularExpression) {
+            name.replaceSubrange(r, with: ".sqlite")
+        }
+        if let sha8 = name.range(of: #"__[0-9a-f]{8}\.sqlite$"#, options: .regularExpression).map({ String(name[$0]) }),
+           let clash = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil))?
+                .first(where: { $0.lastPathComponent.hasSuffix(sha8) }) {
+            throw ImportError.alreadyImported(existing: try info(for: clash))
+        }
+        let dest = directory.appendingPathComponent(name)
+        try fm.moveItem(at: removedURL, to: dest)
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let side = URL(fileURLWithPath: removedURL.path + suffix)
+            if fm.fileExists(atPath: side.path) {
+                try? fm.moveItem(at: side, to: URL(fileURLWithPath: dest.path + suffix))
+            }
+        }
+        return try info(for: dest)
+    }
+
+    /// Parked libraries, by file name — feeds the restore menu.
+    static func removedLibraries() -> [URL] {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: BMZ.removedLibrariesDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles])) ?? []
+        return urls.filter { $0.pathExtension == "sqlite" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     /// LibraryInfo straight off an existing DB — what the sidebar rescan uses.

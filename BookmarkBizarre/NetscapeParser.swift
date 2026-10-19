@@ -213,44 +213,16 @@ struct URLParts {
             path = c.path.isEmpty ? nil : c.path
             query = c.query
             fragment = c.fragment
-        } else {
-            if let m = raw.range(of: #"^[A-Za-z][A-Za-z0-9+.\-]*:"#, options: .regularExpression) {
-                scheme = String(raw[m].dropLast()).lowercased()
-            }
-            // host = whatever sits between // and the next / ? #, with any
-            // user:pass@ and :port peeled off
-            if let m = raw.range(of: #"//[^/?#]+"#, options: .regularExpression) {
-                var h = String(raw[m].dropFirst(2))
-                if let at = h.lastIndex(of: "@") { h = String(h[h.index(after: at)...]) }
-                if let colon = h.firstIndex(of: ":") { h = String(h[..<colon]) }
-                host = h.lowercased().isEmpty ? nil : h.lowercased()
-            }
+        } else if let salvaged = URLNormalizer.schemeAndHost(ofMalformed: raw) {
+            scheme = salvaged.scheme
+            host = salvaged.host
+        } else if let m = raw.range(of: #"^[A-Za-z][A-Za-z0-9+.\-]*:"#, options: .regularExpression) {
+            // Scheme but no host (javascript:, mailto:) — still countable
+            scheme = String(raw[m].dropLast()).lowercased()
         }
-        normalized = Self.normalize(raw: raw, scheme: scheme, host: host, path: path, query: query)
-    }
-
-    /// Query params that identify a CLICK, not a page — two saves of the same
-    /// article with different utm_ trails are the same bookmark.
-    private static let trackingParams: Set<String> =
-        ["gclid", "gclsrc", "fbclid", "mc_cid", "mc_eid", "igshid", "ref_src"]
-
-    static func normalize(raw: String, scheme: String?, host: String?, path: String?, query: String?) -> String {
-        // No host (javascript:, data:, mailto:) → the raw string IS the
-        // identity; lowercasing a bookmarklet would corrupt it.
-        guard let scheme, let host else {
-            return raw.trimmingCharacters(in: .whitespaces)
-        }
-        var p = path ?? ""
-        if p == "/" { p = "" }   // example.com and example.com/ are the same save
-        var q = ""
-        if let query {
-            let kept = query.split(separator: "&").filter { pair in
-                let name = pair.split(separator: "=", maxSplits: 1).first.map(String.init)?.lowercased() ?? ""
-                return !(name.hasPrefix("utm_") || trackingParams.contains(name))
-            }.map(String.init).sorted()   // sorted → param order can't split a dup group
-            if !kept.isEmpty { q = "?" + kept.joined(separator: "&") }
-        }
-        return "\(scheme)://\(host)\(p)\(q)"   // fragment deliberately dropped: same page, different scroll
+        // One definition of "same page" app-wide — see URLNormalizer in
+        // Models.swift; the thumbnail cache keys on exactly this string.
+        normalized = URLNormalizer.normalize(raw)
     }
 }
 

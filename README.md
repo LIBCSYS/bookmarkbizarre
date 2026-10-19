@@ -9,7 +9,7 @@ something you can actually see: a borderless grid of live page tiles you can
 hover to enlarge, click to open, and curate in place. Import six thousand
 bookmarks; find the forty you still care about.
 
-## What it does (v0.2.0)
+## What it does (v0.3.0)
 
 - **Import from anywhere** — pull straight from installed browser profiles
   (Chrome / Edge / Brave JSON, Firefox `places.sqlite`, Safari plist*), or
@@ -33,6 +33,18 @@ bookmarks; find the forty you still care about.
 - **Tile menu** (right edge, on hover) — rename, mark for removal, toggle
   VPN-required, save into a named collection; collections export back out as
   a valid bookmark `.html`
+- **Collections you can delete** — trash a collection from the tile menu
+  (inline confirm); only the grouping goes, never the bookmarks, and Undo
+  puts it back
+- **Folder filter** — pick a folder in the sidebar or the Inventory tree and
+  the grid shows that folder plus everything beneath it, with a breadcrumb
+  and a one-click clear chip
+- **Remove Library** — right-click a library (or press Delete): it leaves the
+  sidebar, its database is parked in `Libraries/Removed`, the original export
+  is untouched; Undo or *Import → Restore Removed Library* brings it back
+- **Shared thumbnails** — captures are keyed on the normalized URL (case,
+  default ports, trailing slash, utm_/fbclid/gclid, fragment), so cosmetic
+  duplicates share one picture; existing captures are re-keyed on first launch
 - **VPN-aware** — hosts that look intranet-only are flagged at import; flagged
   links can launch your VPN client (Settings → path) before opening
 - **Blank slate** — first launch is empty; nothing imports until you say so
@@ -48,6 +60,20 @@ BookmarkBizarre.app/Contents/MacOS/BookmarkBizarre --import bookmarks.html [--di
 
 Runs the full import pipeline, prints a greppable inventory, exits. This is
 how the pipeline is verified without clicking.
+
+## Tests
+
+```sh
+xcodebuild test -project BookmarkBizarre.xcodeproj -scheme BookmarkBizarre
+```
+
+Unit tests cover URL normalization, collection delete/undo, the thumbnail
+re-key migration, and library remove/restore. They run in temp folders only.
+
+## App icon
+
+`design/AppIcon.svg` is the source; `design/render_icon.sh` rasterizes every
+macOS size straight from the vector into `Assets.xcassets/AppIcon.appiconset`.
 
 ## Build
 
